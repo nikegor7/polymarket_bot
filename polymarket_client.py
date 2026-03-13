@@ -4,11 +4,14 @@ import aiohttp
 import config
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
+MARKETS_CACHE_TTL = 900  # 15 минут
 
 
 class PolymarketClient:
     def __init__(self):
         self.session: aiohttp.ClientSession | None = None
+        self._markets_cache: list = []
+        self._markets_fetched_at: float = 0
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -18,10 +21,14 @@ class PolymarketClient:
         await self.session.close()
 
     async def get_markets(self, limit: int = config.TOP_MARKETS) -> list[dict]:
+        import time
+        if self._markets_cache and (time.time() - self._markets_fetched_at) < MARKETS_CACHE_TTL:
+            return self._markets_cache
+
         params = {
             "active": "true",
             "closed": "false",
-            "limit": 500,  # берём с запасом, потом фильтруем и сортируем
+            "limit": 200,  # берём с запасом, потом фильтруем и сортируем
         }
 
         async with self.session.get(f"{GAMMA_BASE}/markets", params=params) as resp:
@@ -88,8 +95,11 @@ class PolymarketClient:
             })
 
         # Сортируем по объёму за 24ч — самые горячие рынки в топе
+        import time
         markets.sort(key=lambda x: x["volume_24hr"], reverse=True)
-        return markets[:limit]
+        self._markets_cache = markets[:limit]
+        self._markets_fetched_at = time.time()
+        return self._markets_cache
 
     async def place_bet(self, token_id: str, side: str, amount_usdc: float) -> dict:
         if config.DRY_RUN:
