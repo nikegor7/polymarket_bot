@@ -51,19 +51,23 @@ class NewsMonitor:
         await self.session.close()
         _save_cache(self.cache)
 
-    async def get_news(self, question: str) -> list[dict]:
+    async def get_news(self, question: str):
+        """Возвращает (articles, is_fresh).
+        is_fresh=True  — новости только что получены из NewsAPI (стоит звать Claude).
+        is_fresh=False — отдаём из кэша (Claude уже звали, пропускаем).
+        """
         query = _extract_query(question)
         if not query:
-            return []
+            return [], False
 
         cached = self.cache.get(query)
         if cached and (time.time() - cached["fetched_at"]) < config.NEWS_CACHE_TTL:
-            return cached["articles"]
+            return cached["articles"], False
 
         articles = await self._fetch(query)
         self.cache[query] = {"articles": articles, "fetched_at": time.time()}
         _save_cache(self.cache)
-        return articles
+        return articles, True
 
     async def _fetch(self, query: str) -> list[dict]:
         params = {
