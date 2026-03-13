@@ -1,4 +1,5 @@
 import json
+import re
 import aiohttp
 import config
 
@@ -20,7 +21,7 @@ class PolymarketClient:
         params = {
             "active": "true",
             "closed": "false",
-            "limit": 100,  # берём с запасом, потом сортируем и обрезаем
+            "limit": 500,  # берём с запасом, потом фильтруем и сортируем
         }
 
         async with self.session.get(f"{GAMMA_BASE}/markets", params=params) as resp:
@@ -61,6 +62,11 @@ class PolymarketClient:
             no_price = float(prices[no_idx])
 
             if yes_price == 0 or no_price == 0:
+                continue
+
+            # Фильтр по теме — проверяем границы слов чтобы "gold" не матчил "golden"
+            question_lower = (m.get("question") or "").lower()
+            if not any(re.search(r'\b' + re.escape(topic) + r'\b', question_lower) for topic in config.ALLOWED_TOPICS):
                 continue
 
             # token_id для ставок (нужен в Этапе 8)

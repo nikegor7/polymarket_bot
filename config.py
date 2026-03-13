@@ -32,3 +32,23 @@ POLL_INTERVAL: int = 300
 TOP_MARKETS: int = 10
 MIN_MARKET_VOLUME: int = 1000
 NEWS_CACHE_TTL: int = 14400  # 4 часа — вписываемся в 100 req/day GNews
+
+# Фильтр тем — только рынки где хотя бы одно слово есть в вопросе
+# Спорт намеренно исключён — результаты матчей плохо предсказываются по новостям
+ALLOWED_TOPICS: list = [
+    # Крипто
+    "bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "sol",
+    "coinbase", "binance", "stablecoin", "defi", "nft", "blockchain",
+    # Политика / США
+    "trump", "election", "president", "congress", "senate", "fed",
+    "white house", "executive order", "tariff", "sanction",
+    # Экономика
+    "inflation", "recession", "gdp", "interest rate", "dollar",
+    "stock market", "s&p", "nasdaq", "oil", "gold",
+    # Технологии
+    "openai", "gpt", "artificial intelligence", "ai ", "apple",
+    "tesla", "spacex", "elon", "google", "microsoft",
+    # Геополитика
+    "ukraine", "russia", "china", "iran", "war", "ceasefire",
+    "nato", "israel", "gaza",
+]
