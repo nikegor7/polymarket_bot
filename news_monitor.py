@@ -6,7 +6,7 @@ from pathlib import Path
 import aiohttp
 import config
 
-NEWS_API_BASE = "https://newsapi.org/v2/everything"
+GNEWS_BASE = "https://gnews.io/api/v4/search"
 CACHE_FILE = Path("news_cache.json")
 
 STOPWORDS = {
@@ -16,13 +16,20 @@ STOPWORDS = {
     "its", "their", "his", "her", "this", "that", "have", "has",
     "do", "does", "did", "can", "could", "would", "should", "may",
     "might", "with", "from", "into", "about", "within", "between",
+    "win", "won", "lose", "lost", "cup", "world", "year", "time",
+    "week", "day", "new", "one", "two", "top", "big", "get", "say",
+    "says", "said", "make", "makes", "made", "take", "takes", "took",
+    "release", "released", "launch", "launched", "exceed", "above",
+    "below", "reach", "surpass", "before", "after", "june", "july",
+    "august", "september", "october", "november", "december",
+    "january", "february", "march", "april",
 }
 
 
 def _extract_query(question: str) -> str:
     words = re.findall(r"[A-Za-z0-9$']+", question)
-    keywords = [w for w in words if w.lower() not in STOPWORDS and len(w) > 2]
-    return " ".join(keywords[:5])
+    keywords = [w for w in words if w.lower() not in STOPWORDS and len(w) >= 4]
+    return " ".join(keywords[:4])
 
 
 def _load_cache() -> dict:
@@ -53,8 +60,8 @@ class NewsMonitor:
 
     async def get_news(self, question: str):
         """Возвращает (articles, is_fresh).
-        is_fresh=True  — новости только что получены из NewsAPI (стоит звать Claude).
-        is_fresh=False — отдаём из кэша (Claude уже звали, пропускаем).
+        is_fresh=True  — данные только что получены из GNews (стоит звать Claude).
+        is_fresh=False — из кэша (Claude пропускаем).
         """
         query = _extract_query(question)
         if not query:
@@ -72,24 +79,24 @@ class NewsMonitor:
     async def _fetch(self, query: str) -> list[dict]:
         params = {
             "q": query,
-            "sortBy": "publishedAt",
-            "pageSize": 5,
-            "language": "en",
-            "apiKey": config.NEWS_API_KEY,
+            "lang": "en",
+            "max": 5,
+            "sortby": "publishedAt",
+            "apikey": config.GNEWS_API_KEY,
         }
         try:
-            async with self.session.get(NEWS_API_BASE, params=params) as resp:
+            async with self.session.get(GNEWS_BASE, params=params) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
         except Exception as e:
-            print(f"  [NewsAPI] Ошибка запроса '{query}': {e}")
+            print(f"  [GNews] Ошибка запроса '{query}': {e}")
             return []
 
         articles = []
         for a in data.get("articles", []):
-            title = a.get("title") or ""
-            description = a.get("description") or ""
-            if title == "[Removed]":
+            title = a.get("title", "").strip()
+            description = a.get("description", "").strip()
+            if not title:
                 continue
             articles.append({
                 "title": title,

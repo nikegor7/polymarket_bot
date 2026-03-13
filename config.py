@@ -13,7 +13,7 @@ def _require(key: str) -> str:
 
 # API keys
 ANTHROPIC_API_KEY: str = _require("ANTHROPIC_API_KEY")
-NEWS_API_KEY: str = _require("NEWS_API_KEY")
+GNEWS_API_KEY: str = _require("GNEWS_API_KEY")
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 
 # Budget
@@ -31,4 +31,4 @@ KELLY_FRACTION: float = 0.25
 POLL_INTERVAL: int = 300
 TOP_MARKETS: int = 10
 MIN_MARKET_VOLUME: int = 1000
-NEWS_CACHE_TTL: int = 3600
+NEWS_CACHE_TTL: int = 14400  # 4 часа — вписываемся в 100 req/day GNews
