@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -98,5 +99,4 @@ if cats:
             "P&L": f"${data['pnl']:+.2f}",
         })
 
-    import pandas as pd
     st.dataframe(pd.DataFrame(cat_rows), use_container_width=True, hide_index=True)
