@@ -13,7 +13,7 @@ from core.polymarket_client import PolymarketClient
 from core.news_monitor import NewsMonitor
 from core.strategy import Strategy
 from core.logger import log_decision, print_summary, _load_history
-from core.outcome_tracker import check_resolved_markets
+from core.outcome_tracker import check_resolved_markets, print_calibration_report
 
 
 def ts():
@@ -116,6 +116,8 @@ async def main():
             history = _load_history()
             if history:
                 print_summary(history)
+
+            print_calibration_report()
 
             print(f"\n[{ts()}] Следующий цикл через {interval} сек...")
             await asyncio.sleep(interval)

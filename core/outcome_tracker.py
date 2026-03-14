@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +93,119 @@ async def check_resolved_markets() -> int:
         _save_outcomes(outcomes)
 
     return new_count
+
+
+_CATEGORIES = {
+    "crypto":      ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "sol",
+                    "coinbase", "binance", "stablecoin", "defi", "nft", "blockchain"],
+    "politics":    ["trump", "election", "president", "congress", "senate", "fed",
+                    "white house", "executive order", "tariff", "sanction"],
+    "economics":   ["inflation", "recession", "gdp", "interest rate", "dollar",
+                    "stock market", "s&p", "nasdaq", "oil", "gold"],
+    "tech":        ["openai", "gpt", "artificial intelligence", "ai ", "apple",
+                    "tesla", "spacex", "elon", "google", "microsoft"],
+    "geopolitics": ["ukraine", "russia", "china", "iran", "war", "ceasefire",
+                    "nato", "israel", "gaza"],
+}
+
+
+def _detect_category(question: str) -> str:
+    q = question.lower()
+    for category, keywords in _CATEGORIES.items():
+        if any(re.search(r'\b' + re.escape(kw.strip()) + r'\b', q) for kw in keywords):
+            return category
+    return "other"
+
+
+def calibration_score(outcomes: list) -> dict:
+    """Brier score + breakdown по диапазонам вероятности."""
+    if not outcomes:
+        return {}
+
+    # Для калибровки используем вероятность нашей ставки (не всегда our_prob=prob YES)
+    brier_sum = 0.0
+    buckets: dict[str, dict] = {}
+
+    for o in outcomes:
+        # expressed_prob = вероятность того исхода, на который мы ставили
+        expressed_prob = o["our_prob"] if o["our_side"] == "YES" else 1 - o["our_prob"]
+        actual = 1.0 if o["won"] else 0.0
+        brier_sum += (expressed_prob - actual) ** 2
+
+        low = int(expressed_prob * 10) * 10
+        key = f"{low}-{low + 10}%"
+        if key not in buckets:
+            buckets[key] = {"wins": 0, "total": 0}
+        buckets[key]["total"] += 1
+        if o["won"]:
+            buckets[key]["wins"] += 1
+
+    return {
+        "brier_score": round(brier_sum / len(outcomes), 4),
+        "buckets": buckets,
+        "total": len(outcomes),
+    }
+
+
+def hypothetical_roi(outcomes: list) -> dict:
+    """Гипотетический P&L и ROI по всем разрешённым ставкам."""
+    if not outcomes:
+        return {}
+
+    total_pnl = sum(o["hypothetical_pnl"] for o in outcomes)
+    total_bet = sum(o["bet_amount"] for o in outcomes)
+    wins = sum(1 for o in outcomes if o["won"])
+
+    return {
+        "total_pnl": round(total_pnl, 2),
+        "total_bet": round(total_bet, 2),
+        "roi_pct": round(total_pnl / total_bet * 100, 1) if total_bet > 0 else 0.0,
+        "win_rate": round(wins / len(outcomes), 3),
+        "wins": wins,
+        "total": len(outcomes),
+    }
+
+
+def win_rate_by_category(outcomes: list) -> dict[str, dict]:
+    """Win rate разбитый по темам."""
+    cats: dict[str, dict] = {}
+    for o in outcomes:
+        cat = _detect_category(o["question"])
+        if cat not in cats:
+            cats[cat] = {"wins": 0, "total": 0, "pnl": 0.0}
+        cats[cat]["total"] += 1
+        if o["won"]:
+            cats[cat]["wins"] += 1
+        cats[cat]["pnl"] = round(cats[cat]["pnl"] + o["hypothetical_pnl"], 2)
+    return cats
+
+
+def print_calibration_report() -> None:
+    """Загружает outcomes.json и печатает все калибровочные метрики."""
+    outcomes = _load_json(OUTCOMES_FILE)
+    if not outcomes:
+        return
+
+    roi = hypothetical_roi(outcomes)
+    cal = calibration_score(outcomes)
+    cats = win_rate_by_category(outcomes)
+
+    print(f"\n=== КАЛИБРОВКА ({roi['total']} исходов) ===")
+    print(f"  Win rate:        {roi['win_rate']:.0%}  ({roi['wins']}/{roi['total']})")
+    print(f"  Гипотет. P&L:   ${roi['total_pnl']:+.2f}  (ROI {roi['roi_pct']:+.1f}%)")
+    print(f"  Brier score:     {cal['brier_score']:.4f}  (цель < 0.05)")
+
+    if cal.get("buckets"):
+        print("  По диапазонам вероятности:")
+        for bucket, data in sorted(cal["buckets"].items()):
+            wr = data["wins"] / data["total"] if data["total"] else 0
+            print(f"    {bucket:9s} → {data['wins']}/{data['total']} выиграно ({wr:.0%})")
+
+    if cats:
+        print("  По темам:")
+        for cat, data in sorted(cats.items(), key=lambda x: -x[1]["total"]):
+            wr = data["wins"] / data["total"] if data["total"] else 0
+            print(f"    {cat:12s} → {data['wins']}/{data['total']} ({wr:.0%}) | P&L ${data['pnl']:+.2f}")
 
 
 async def _fetch_resolution(session: aiohttp.ClientSession, condition_id: str) -> dict | None:
