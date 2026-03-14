@@ -1,10 +1,10 @@
 import json
 import re
 
-import anthropic
+from anthropic import AsyncAnthropic
 import config
 
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
 
 
 def _build_news_block(articles: list[dict]) -> str:
@@ -21,16 +21,18 @@ def _build_news_block(articles: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(question: str, market_price: float, news_block: str, price_change_1h: float = 0.0) -> str:
+def _build_prompt(question: str, market_price: float, news_block: str, price_change_1h: float = 0.0, crypto_signal: str = "") -> str:
     price_signal = ""
     if abs(price_change_1h) >= 0.03:
         direction = "вырос" if price_change_1h > 0 else "упал"
         price_signal = f"\nСигнал рынка: цена YES {direction} на {abs(price_change_1h):.1%} за последний час."
 
+    crypto_block = f"\nКрипто данные: {crypto_signal}" if crypto_signal else ""
+
     return f"""Ты — аналитик рынков предсказаний. Оцени вероятность события на основе новостей.
 
 Вопрос рынка: {question}
-Текущая рыночная цена YES: {market_price:.0%}{price_signal}
+Текущая рыночная цена YES: {market_price:.0%}{price_signal}{crypto_block}
 
 Свежие новости:
 {news_block}
@@ -79,15 +81,15 @@ def _kelly_bet(our_prob: float, market_price: float) -> float:
 
 
 class Strategy:
-    async def evaluate(self, market: dict, articles: list[dict], price_change_1h: float = 0.0):
+    async def evaluate(self, market: dict, articles: list[dict], price_change_1h: float = 0.0, crypto_signal: str = ""):
         question = market["question"]
         yes_price = market["yes_price"]
         no_price = market["no_price"]
         news_block = _build_news_block(articles)
-        prompt = _build_prompt(question, yes_price, news_block, price_change_1h)
+        prompt = _build_prompt(question, yes_price, news_block, price_change_1h, crypto_signal)
 
         try:
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=256,
                 messages=[{"role": "user", "content": prompt}],

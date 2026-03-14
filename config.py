@@ -14,6 +14,7 @@ def _require(key: str) -> str:
 # API keys
 ANTHROPIC_API_KEY: str = _require("ANTHROPIC_API_KEY")
 GNEWS_API_KEY: str = _require("GNEWS_API_KEY")
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")  # если задан — используется вместо GNews
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 
 # Budget

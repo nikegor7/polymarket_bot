@@ -7,6 +7,7 @@ import aiohttp
 import config
 
 GNEWS_BASE = "https://gnews.io/api/v4/search"
+TAVILY_BASE = "https://api.tavily.com/search"
 CACHE_FILE = Path("data/news_cache.json")
 
 STOPWORDS = {
@@ -77,6 +78,39 @@ class NewsMonitor:
         return articles, True
 
     async def _fetch(self, query: str) -> list[dict]:
+        if config.TAVILY_API_KEY:
+            return await self._fetch_tavily(query)
+        return await self._fetch_gnews(query)
+
+    async def _fetch_tavily(self, query: str) -> list[dict]:
+        payload = {
+            "api_key": config.TAVILY_API_KEY,
+            "query": query,
+            "search_depth": "basic",
+            "max_results": 5,
+            "include_answer": False,
+        }
+        try:
+            async with self.session.post(TAVILY_BASE, json=payload) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        except Exception as e:
+            print(f"  [Tavily] Ошибка запроса '{query}': {e}")
+            return []
+
+        articles = []
+        for r in data.get("results", []):
+            title = r.get("title", "").strip()
+            if not title:
+                continue
+            articles.append({
+                "title": title,
+                "description": r.get("content", "")[:300].strip(),
+                "publishedAt": r.get("published_date", ""),
+            })
+        return articles
+
+    async def _fetch_gnews(self, query: str) -> list[dict]:
         params = {
             "q": query,
             "lang": "en",

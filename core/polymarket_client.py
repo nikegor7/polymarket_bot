@@ -10,8 +10,18 @@ import config
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 MARKETS_CACHE_TTL = 900   # 15 минут
 DAILY_CACHE_TTL = 120     # 2 минуты
+
+_COIN_MAP = {
+    "bitcoin": "bitcoin", "btc": "bitcoin",
+    "ethereum": "ethereum", "eth": "ethereum",
+    "solana": "solana", "sol": "solana",
+    "binance": "binancecoin", "bnb": "binancecoin",
+    "coinbase": "coinbase-exchange-token",
+    "xrp": "ripple",
+}
 
 
 class PolymarketClient:
@@ -174,6 +184,36 @@ class PolymarketClient:
                 return round(best_ask - best_bid, 4)
         except Exception:
             return 1.0
+
+    async def get_crypto_signal(self, question: str) -> str:
+        """Возвращает строку с ценой и 24h изменением для крипто-монет из вопроса.
+        Пример: 'BTC: $85,000 (+3.2% 24h), ETH: $3,200 (-1.1% 24h)'
+        Если монет нет или ошибка — пустая строка."""
+        q = question.lower()
+        coins = list(dict.fromkeys(cid for kw, cid in _COIN_MAP.items() if kw in q))
+        if not coins:
+            return ""
+        try:
+            async with self.session.get(
+                f"{COINGECKO_BASE}/simple/price",
+                params={"ids": ",".join(coins), "vs_currencies": "usd", "include_24hr_change": "true"},
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+        except Exception:
+            return ""
+
+        parts = []
+        for coin in coins:
+            info = data.get(coin, {})
+            price = info.get("usd")
+            change = info.get("usd_24h_change")
+            if price:
+                name = coin.upper()
+                change_str = f" ({change:+.1f}% 24h)" if change is not None else ""
+                parts.append(f"{name}: ${price:,.0f}{change_str}")
+        return ", ".join(parts)
 
     async def place_bet(self, token_id: str, side: str, amount_usdc: float) -> dict:
         if config.DRY_RUN:

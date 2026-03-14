@@ -20,6 +20,46 @@ def ts():
     return datetime.now().strftime("%H:%M:%S")
 
 
+async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly: PolymarketClient):
+    """Анализирует один рынок: новости + цена + крипто сигнал + Claude.
+    Возвращает (market, result, price_change) или (market, None, 0) при пропуске."""
+    question = market["question"]
+    try:
+        articles, is_fresh = await news.get_news(question)
+    except Exception as e:
+        print(f"  [{ts()}] {question[:50]} — ошибка новостей: {e}")
+        return market, None, 0.0
+
+    if not articles:
+        print(f"  [{ts()}] {question[:50]} — новостей нет, пропуск")
+        return market, None, 0.0
+
+    if not is_fresh:
+        print(f"  [{ts()}] {question[:50]} — кэш, пропуск")
+        return market, None, 0.0
+
+    # Параллельно: цена за 1ч + крипто сигнал
+    price_change, crypto_signal = await asyncio.gather(
+        poly.get_price_change_1h(market["yes_token_id"]),
+        poly.get_crypto_signal(question),
+    )
+
+    if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
+        direction = "+" if price_change > 0 else ""
+        print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
+    if crypto_signal:
+        print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
+
+    print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей, анализируем...")
+    try:
+        result = await strategy.evaluate(market, articles, price_change_1h=price_change, crypto_signal=crypto_signal)
+    except Exception as e:
+        print(f"  [{ts()}] {question[:50]} — ошибка Claude: {e}")
+        return market, None, 0.0
+
+    return market, result, price_change
+
+
 async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strategy, daily_mode: bool = False):
     label = "daily" if daily_mode else "обычный"
     print(f"\n[{ts()}] Загружаем рынки ({label})...")
@@ -29,52 +69,28 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
         print(f"[{ts()}] Ошибка загрузки рынков: {e}")
         return
 
-    print(f"[{ts()}] Найдено {len(markets)} рынков для анализа")
+    print(f"[{ts()}] Найдено {len(markets)} рынков — запускаем параллельный анализ...")
 
-    for market in markets:
-        question = market["question"]
+    # Параллельный анализ всех рынков
+    tasks = [_analyze_one(m, news, strategy, poly) for m in markets]
+    analyses = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Логирование и ставки — последовательно
+    for item in analyses:
+        if isinstance(item, Exception):
+            print(f"[{ts()}] Неожиданная ошибка анализа: {item}")
+            continue
+
+        market, result, price_change = item
         end_date = (market.get("end_date") or "")[:10] or "?"
-        print(f"\n[{ts()}] --- {question[:60]} | до {end_date}")
+        print(f"\n[{ts()}] --- {market['question'][:60]} | до {end_date}")
 
-        # Шаг 1: новости
-        try:
-            articles, is_fresh = await news.get_news(question)
-        except Exception as e:
-            print(f"  [{ts()}] Ошибка NewsAPI: {e}")
-            continue
-
-        if not articles:
-            print(f"  [{ts()}] Новостей нет -- пропуск")
-            continue
-
-        if not is_fresh:
-            print(f"  [{ts()}] Новости в кэше -- Claude не зовём, пропуск")
-            continue
-
-        print(f"  [{ts()}] Новостей: {len(articles)} | анализируем...")
-
-        # Шаг 2: движение цены за 1ч (Этап 12)
-        price_change = await poly.get_price_change_1h(market["yes_token_id"])
-        if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
-            direction = "+" if price_change > 0 else ""
-            print(f"  [{ts()}] Цена движется: {direction}{price_change:.1%} за час")
-
-        # Шаг 3: оценка Claude
-        try:
-            result = await strategy.evaluate(market, articles, price_change_1h=price_change)
-        except Exception as e:
-            print(f"  [{ts()}] Ошибка Claude: {e}")
-            continue
-
-        # Шаг 4: логирование
         log_decision(market, result, config.DRY_RUN)
 
-        # Шаг 5: проверка спреда и ставка (Этап 13)
         if result:
             token_id = market["yes_token_id"] if result["side"] == "YES" else market["no_token_id"]
             spread = await poly.get_spread(token_id)
-            spread_ok = spread <= config.MAX_SPREAD
-            if not spread_ok:
+            if spread > config.MAX_SPREAD:
                 warn = "пропуск" if not config.DRY_RUN else "предупреждение (DRY RUN)"
                 print(f"  [{ts()}] Спред {spread:.3f} > MAX_SPREAD {config.MAX_SPREAD} — {warn}")
                 if not config.DRY_RUN:
