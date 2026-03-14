@@ -27,7 +27,7 @@ STOPWORDS = {
 
 
 def _extract_query(question: str) -> str:
-    words = re.findall(r"[A-Za-z0-9$']+", question)
+    words = re.findall(r"[\w$']+", question)
     keywords = [w for w in words if w.lower() not in STOPWORDS and len(w) >= 4]
     return " ".join(keywords[:4])
 

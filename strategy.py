@@ -21,11 +21,16 @@ def _build_news_block(articles: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(question: str, market_price: float, news_block: str) -> str:
+def _build_prompt(question: str, market_price: float, news_block: str, price_change_1h: float = 0.0) -> str:
+    price_signal = ""
+    if abs(price_change_1h) >= 0.03:
+        direction = "вырос" if price_change_1h > 0 else "упал"
+        price_signal = f"\nСигнал рынка: цена YES {direction} на {abs(price_change_1h):.1%} за последний час."
+
     return f"""Ты — аналитик рынков предсказаний. Оцени вероятность события на основе новостей.
 
 Вопрос рынка: {question}
-Текущая рыночная цена YES: {market_price:.0%}
+Текущая рыночная цена YES: {market_price:.0%}{price_signal}
 
 Свежие новости:
 {news_block}
@@ -74,11 +79,12 @@ def _kelly_bet(our_prob: float, market_price: float) -> float:
 
 
 class Strategy:
-    async def evaluate(self, market: dict, articles: list[dict]):
+    async def evaluate(self, market: dict, articles: list[dict], price_change_1h: float = 0.0):
         question = market["question"]
         yes_price = market["yes_price"]
+        no_price = market["no_price"]
         news_block = _build_news_block(articles)
-        prompt = _build_prompt(question, yes_price, news_block)
+        prompt = _build_prompt(question, yes_price, news_block, price_change_1h)
 
         try:
             response = client.messages.create(
@@ -104,23 +110,34 @@ class Strategy:
             print(f"  [Claude] conf=low — пропускаем")
             return None
 
-        edge = our_prob - yes_price
+        edge_yes = our_prob - yes_price
+        edge_no = (1 - our_prob) - no_price
 
-        if edge < config.MIN_EDGE:
-            print(f"  [Claude] Edge {edge:+.1%} < MIN_EDGE {config.MIN_EDGE:.0%} — пропускаем")
+        if edge_yes >= edge_no and edge_yes >= config.MIN_EDGE:
+            side = "YES"
+            edge = edge_yes
+            bet = _kelly_bet(our_prob, yes_price)
+            market_prob = yes_price
+        elif edge_no > edge_yes and edge_no >= config.MIN_EDGE:
+            side = "NO"
+            edge = edge_no
+            bet = _kelly_bet(1 - our_prob, no_price)
+            market_prob = no_price
+        else:
+            best = max(edge_yes, edge_no)
+            print(f"  [Claude] Edge YES={edge_yes:+.1%} NO={edge_no:+.1%} < MIN_EDGE {config.MIN_EDGE:.0%} — пропускаем")
             return None
 
-        bet = _kelly_bet(our_prob, yes_price)
         if bet <= 0:
             print(f"  [Claude] Kelly=0 — пропускаем")
             return None
 
         return {
             "our_prob": our_prob,
-            "market_prob": yes_price,
+            "market_prob": market_prob,
             "edge": edge,
             "confidence": confidence,
             "bet_amount": round(bet, 2),
-            "side": "YES",
+            "side": side,
             "reasoning": reasoning,
         }
