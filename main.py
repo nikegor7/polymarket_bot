@@ -9,10 +9,11 @@ if sys.platform == "win32":
 from datetime import datetime
 
 import config
-from polymarket_client import PolymarketClient
-from news_monitor import NewsMonitor
-from strategy import Strategy
-from logger import log_decision, print_summary, _load_history
+from core.polymarket_client import PolymarketClient
+from core.news_monitor import NewsMonitor
+from core.strategy import Strategy
+from core.logger import log_decision, print_summary, _load_history
+from core.outcome_tracker import check_resolved_markets
 
 
 def ts():
@@ -107,6 +108,10 @@ async def main():
             print(f"{'='*60}")
 
             await run_cycle(poly, news, strategy, daily_mode=daily_mode)
+
+            new_outcomes = await check_resolved_markets()
+            if new_outcomes:
+                print(f"[{ts()}] Трекер: записано {new_outcomes} новых исходов")
 
             history = _load_history()
             if history:

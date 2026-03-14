@@ -2,7 +2,6 @@
 venv/
 __pycache__/
 *.pyc
-news_cache.json
-bet_history.json
+data/
 PROGRESS.txt
 .claude

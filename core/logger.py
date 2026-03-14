@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-HISTORY_FILE = Path("bet_history.json")
+HISTORY_FILE = Path("data/bet_history.json")
 
 
 def _load_history() -> list:
@@ -40,6 +40,7 @@ def log_decision(market: dict, result, dry_run: bool) -> None:
         "timestamp": timestamp,
         "question": question,
         "condition_id": market.get("condition_id", ""),
+        "end_date": market.get("end_date", ""),
         "our_prob": result["our_prob"],
         "market_prob": result["market_prob"],
         "edge": round(result["edge"], 4),

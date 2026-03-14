@@ -7,7 +7,7 @@ import aiohttp
 import config
 
 GNEWS_BASE = "https://gnews.io/api/v4/search"
-CACHE_FILE = Path("news_cache.json")
+CACHE_FILE = Path("data/news_cache.json")
 
 STOPWORDS = {
     "will", "the", "a", "an", "be", "is", "are", "was", "were",
