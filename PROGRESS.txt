@@ -81,7 +81,10 @@ PHASE 5 — Signal Improvement      [IN PROGRESS]
 [x] CATEGORY_TOPICS + ACTIVE_CATEGORIES в config.py
 [x] MIN_MARKET_VOLUME_TOTAL — фильтр по общему объёму
 [x] Rate limiter для GNews API (100 req/day защита)
-[x] pytest тесты для Kelly, edge detection, outcome resolution
+[x] pytest: 55 тестов (Kelly, edge, P&L, calibration, database, backtester)
+[x] SQLite вместо JSON (data/bot.db, WAL mode, миграция из JSON)
+[x] Structured output: Claude tool_use вместо regex парсинга
+[x] Backtester: перебор MIN_EDGE × KELLY_FRACTION на исторических данных
 [ ] Специализация в одной нише (крипто — лучший вариант)
 
 =========================================

@@ -1,16 +1,16 @@
-"""Тесты для Kelly criterion, edge detection, parse_response."""
+"""Тесты для Kelly criterion, edge detection, tool_use parsing."""
 from __future__ import annotations
 
 import sys
 import os
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Подменяем env до импорта config
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("GNEWS_API_KEY", "test-key")
 
-from core.strategy import _kelly_bet, _parse_response, _build_news_block
+from core.strategy import _kelly_bet, _parse_tool_response, _build_news_block
 import config
 
 
@@ -47,8 +47,7 @@ def test_kelly_extreme_odds():
 
 
 def test_kelly_symmetric():
-    """Kelly для NO стороны: prob=0.3 на NO (market_price=0.45) должен давать ставку."""
-    # Для NO: our_prob для NO = 1 - 0.3 = 0.7, market_price NO = 0.45
+    """Kelly для NO стороны: prob=0.7 на NO (market_price=0.45) должен давать ставку."""
     bet = _kelly_bet(our_prob=0.70, market_price=0.45)
     assert bet > 0
 
@@ -76,8 +75,8 @@ def test_edge_neither_side():
     our_prob = 0.52
     yes_price = 0.50
     no_price = 0.50
-    edge_yes = our_prob - yes_price  # 0.02
-    edge_no = (1 - our_prob) - no_price  # -0.02
+    edge_yes = our_prob - yes_price
+    edge_no = (1 - our_prob) - no_price
     assert edge_yes < config.MIN_EDGE
     assert edge_no < config.MIN_EDGE
 
@@ -87,56 +86,80 @@ def test_edge_picks_best_side():
     our_prob = 0.30
     yes_price = 0.40
     no_price = 0.60
-    edge_yes = our_prob - yes_price  # -0.10
-    edge_no = (1 - our_prob) - no_price  # 0.10
+    edge_yes = our_prob - yes_price
+    edge_no = (1 - our_prob) - no_price
     assert edge_no > edge_yes
     assert edge_no >= config.MIN_EDGE
 
 
-# ─── Parse response ────────────────────────────────────────
+# ─── Parse tool_use response ──────────────────────────────
 
-def test_parse_valid_json():
-    text = '{"probability": 0.72, "confidence": "medium", "reasoning": "Test reason"}'
-    result = _parse_response(text)
+def _mock_response(tool_input: dict):
+    """Создаёт mock response с tool_use блоком."""
+    block = MagicMock()
+    block.type = "tool_use"
+    block.name = "submit_analysis"
+    block.input = tool_input
+    response = MagicMock()
+    response.content = [block]
+    return response
+
+
+def _mock_text_response(text: str):
+    """Mock response с текстовым блоком (без tool_use)."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    return response
+
+
+def test_parse_valid_tool_response():
+    resp = _mock_response({"probability": 0.72, "confidence": "medium", "reasoning": "Test reason"})
+    result = _parse_tool_response(resp)
     assert result is not None
     assert result["probability"] == 0.72
     assert result["confidence"] == "medium"
     assert result["reasoning"] == "Test reason"
 
 
-def test_parse_json_with_noise():
-    """Claude иногда добавляет текст вокруг JSON."""
-    text = 'Here is my analysis:\n{"probability": 0.65, "confidence": "high", "reasoning": "Strong signal"}\nThank you.'
-    result = _parse_response(text)
+def test_parse_high_confidence():
+    resp = _mock_response({"probability": 0.85, "confidence": "high", "reasoning": "Very strong signal"})
+    result = _parse_tool_response(resp)
     assert result is not None
-    assert result["probability"] == 0.65
+    assert result["confidence"] == "high"
 
 
 def test_parse_invalid_probability():
-    text = '{"probability": 1.5, "confidence": "medium", "reasoning": "Bad"}'
-    result = _parse_response(text)
+    resp = _mock_response({"probability": 1.5, "confidence": "medium", "reasoning": "Bad"})
+    result = _parse_tool_response(resp)
     assert result is None
 
 
 def test_parse_zero_probability():
-    text = '{"probability": 0.0, "confidence": "medium", "reasoning": "Bad"}'
-    result = _parse_response(text)
+    resp = _mock_response({"probability": 0.0, "confidence": "medium", "reasoning": "Bad"})
+    result = _parse_tool_response(resp)
     assert result is None
 
 
 def test_parse_invalid_confidence():
-    text = '{"probability": 0.5, "confidence": "very_high", "reasoning": "Bad"}'
-    result = _parse_response(text)
+    resp = _mock_response({"probability": 0.5, "confidence": "very_high", "reasoning": "Bad"})
+    result = _parse_tool_response(resp)
     assert result is None
 
 
-def test_parse_garbage():
-    result = _parse_response("This is not JSON at all")
+def test_parse_no_tool_use():
+    """Если Claude ответил текстом вместо tool_use — None."""
+    resp = _mock_text_response("I think the probability is 0.72")
+    result = _parse_tool_response(resp)
     assert result is None
 
 
-def test_parse_empty():
-    result = _parse_response("")
+def test_parse_empty_content():
+    response = MagicMock()
+    response.content = []
+    result = _parse_tool_response(response)
     assert result is None
 
 

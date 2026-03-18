@@ -25,26 +25,33 @@
 ```
 polymarket_bot/
 ├── core/                        # бизнес-логика
+│   ├── database.py              # SQLite хранилище (bets, outcomes)
 │   ├── polymarket_client.py     # Polymarket API (рынки, цены, CLOB)
-│   ├── news_monitor.py          # новости + кэш
-│   ├── strategy.py              # Claude анализ + Kelly criterion
-│   ├── logger.py                # запись решений
-│   └── outcome_tracker.py      # [Phase 3] отслеживание исходов
+│   ├── news_monitor.py          # новости + кэш + rate limiter
+│   ├── strategy.py              # Claude tool_use анализ + Kelly criterion
+│   ├── logger.py                # запись решений в SQLite
+│   ├── outcome_tracker.py       # отслеживание исходов + калибровка
+│   └── backtester.py            # бэктест: перебор параметров стратегии
 │
-├── dashboard/                   # [Phase 4] Streamlit UI
+├── dashboard/                   # Streamlit UI
 │   ├── app.py                   # точка входа
 │   └── pages/
 │       ├── 01_overview.py       # KPI: win rate, P&L, calibration
 │       ├── 02_bets.py           # таблица ставок + фильтры
-│       ├── 03_markets.py        # браузер рынков с ценами
+│       ├── 03_markets.py        # браузер рынков с ценами по категориям
 │       └── 04_calibration.py    # график: наша prob vs фактический исход
 │
-├── data/                        # данные (в .gitignore)
-│   ├── bet_history.json         # история решений бота
-│   ├── news_cache.json          # кэш новостей
-│   └── outcomes.json            # [Phase 3] фактические исходы
+├── tests/                       # pytest тесты
+│   ├── test_strategy.py         # Kelly, edge, tool_use parsing
+│   ├── test_outcome_tracker.py  # P&L, категории, калибровка
+│   ├── test_database.py         # SQLite CRUD
+│   └── test_backtester.py       # бэктест логика
 │
-├── config.py                    # все настройки
+├── data/                        # данные (в .gitignore)
+│   ├── bot.db                   # SQLite база (WAL mode)
+│   └── news_cache.json          # кэш новостей
+│
+├── config.py                    # все настройки + CATEGORY_TOPICS
 ├── main.py                      # главный цикл бота
 ├── requirements.txt
 ├── .env                         # секреты — не коммитить

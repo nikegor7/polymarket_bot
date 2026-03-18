@@ -9,10 +9,11 @@ if sys.platform == "win32":
 from datetime import datetime
 
 import config
+from core.database import init_db, load_bets
 from core.polymarket_client import PolymarketClient
 from core.news_monitor import NewsMonitor
 from core.strategy import Strategy
-from core.logger import log_decision, print_summary, _load_history
+from core.logger import log_decision, print_summary
 from core.outcome_tracker import check_resolved_markets, print_calibration_report
 
 
@@ -102,6 +103,7 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
 
 
 async def main():
+    init_db()
     daily_mode = config.DAILY_MODE
     interval = config.DAILY_POLL_INTERVAL if daily_mode else config.POLL_INTERVAL
     markets_mode = "DAILY" if daily_mode else "NORMAL"
@@ -129,9 +131,9 @@ async def main():
             if new_outcomes:
                 print(f"[{ts()}] Трекер: записано {new_outcomes} новых исходов")
 
-            history = _load_history()
-            if history:
-                print_summary(history)
+            bets = load_bets()
+            if bets:
+                print_summary(bets)
 
             print_calibration_report()
 

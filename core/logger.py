@@ -1,25 +1,12 @@
-import json
+from __future__ import annotations
+
 from datetime import datetime
-from pathlib import Path
 
-HISTORY_FILE = Path("data/bet_history.json")
-
-
-def _load_history() -> list:
-    if HISTORY_FILE.exists():
-        try:
-            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-    return []
-
-
-def _save_history(history: list) -> None:
-    HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+from core.database import insert_bet, load_bets
 
 
 def log_decision(market: dict, result, dry_run: bool) -> None:
-    """Записывает решение бота в bet_history.json и выводит в консоль."""
+    """Записывает решение бота в БД и выводит в консоль."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     question = market["question"]
 
@@ -51,23 +38,21 @@ def log_decision(market: dict, result, dry_run: bool) -> None:
         "reasoning": result["reasoning"],
     }
 
-    history = _load_history()
-    history.append(record)
-    _save_history(history)
+    insert_bet(record)
 
 
-def print_summary(history: list) -> None:
+def print_summary(bets: list) -> None:
     """Выводит статистику по накопленной истории."""
-    if not history:
+    if not bets:
         print("История пуста.")
         return
 
-    total = len(history)
-    total_bet = sum(r["bet_amount"] for r in history)
-    avg_edge = sum(r["edge"] for r in history) / total
+    total = len(bets)
+    total_bet = sum(r["bet_amount"] for r in bets)
+    avg_edge = sum(r["edge"] for r in bets) / total
 
     print(f"\n=== СТАТИСТИКА ({total} ставок) ===")
     print(f"  Общая сумма ставок: ${total_bet:.2f}")
     print(f"  Средний edge:       {avg_edge:+.1%}")
-    print(f"  DRY RUN:            {sum(1 for r in history if r['dry_run'])}")
-    print(f"  LIVE:               {sum(1 for r in history if not r['dry_run'])}")
+    print(f"  DRY RUN:            {sum(1 for r in bets if r['dry_run'])}")
+    print(f"  LIVE:               {sum(1 for r in bets if not r['dry_run'])}")

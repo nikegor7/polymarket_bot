@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -7,23 +6,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
+from core.database import init_db, load_outcomes
 from core.outcome_tracker import calibration_score, hypothetical_roi, win_rate_by_category
-
-OUTCOMES_FILE = Path("data/outcomes.json")
 
 st.set_page_config(page_title="Calibration", page_icon="🎯", layout="wide")
 st.title("🎯 Calibration")
 
-
-def load_outcomes() -> list:
-    if OUTCOMES_FILE.exists():
-        try:
-            return json.loads(OUTCOMES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
+init_db()
 outcomes = load_outcomes()
 
 if not outcomes:

@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -7,26 +6,15 @@ import plotly.express as px
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
-from core.outcome_tracker import calibration_score, hypothetical_roi, win_rate_by_category
-
-HISTORY_FILE = Path("data/bet_history.json")
-OUTCOMES_FILE = Path("data/outcomes.json")
+from core.database import init_db, load_bets, load_outcomes
+from core.outcome_tracker import calibration_score, hypothetical_roi
 
 st.set_page_config(page_title="Overview", page_icon="📈", layout="wide")
 st.title("📈 Overview")
 
-
-def load_json(path: Path) -> list:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-history = load_json(HISTORY_FILE)
-outcomes = load_json(OUTCOMES_FILE)
+init_db()
+history = load_bets()
+outcomes = load_outcomes()
 
 if not history:
     st.warning("Нет данных. Запусти бота: `python main.py`")

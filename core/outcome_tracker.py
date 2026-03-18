@@ -1,51 +1,40 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 import aiohttp
 
+from core.database import (
+    get_tracked_condition_ids,
+    insert_outcome,
+    load_bets,
+    load_outcomes,
+)
+
 GAMMA_BASE = "https://gamma-api.polymarket.com"
-HISTORY_FILE = Path("data/bet_history.json")
-OUTCOMES_FILE = Path("data/outcomes.json")
-
-
-def _load_json(path: Path) -> list:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-    return []
-
-
-def _save_outcomes(outcomes: list) -> None:
-    OUTCOMES_FILE.write_text(json.dumps(outcomes, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _calc_hypothetical_pnl(side: str, our_prob: float, market_prob: float, bet_amount: float, resolved_yes: bool) -> float:
     """Гипотетический P&L если бы ставка была реальной."""
     won = (side == "YES" and resolved_yes) or (side == "NO" and not resolved_yes)
     if won:
-        price = market_prob  # цена по которой ставили
+        price = market_prob
         return round(bet_amount * (1 / price - 1), 4)
     else:
         return round(-bet_amount, 4)
 
 
 async def check_resolved_markets() -> int:
-    """Проверяет bet_history на разрешённые рынки и дописывает outcomes.json.
+    """Проверяет bets на разрешённые рынки и записывает outcomes.
     Возвращает количество новых записей."""
-    history = _load_json(HISTORY_FILE)
+    history = load_bets()
     if not history:
         return 0
 
-    outcomes = _load_json(OUTCOMES_FILE)
-    tracked_ids = {o["condition_id"] for o in outcomes}
-
+    tracked_ids = get_tracked_condition_ids()
     now = datetime.now(timezone.utc)
+
     to_check = [
         r for r in history
         if r.get("condition_id")
@@ -63,7 +52,7 @@ async def check_resolved_markets() -> int:
             condition_id = record["condition_id"]
             result = await _fetch_resolution(session, condition_id)
             if result is None:
-                continue  # ещё не разрешён или ошибка
+                continue
 
             resolved_yes = result["resolved_yes"]
             won = (record["side"] == "YES" and resolved_yes) or (record["side"] == "NO" and not resolved_yes)
@@ -84,15 +73,12 @@ async def check_resolved_markets() -> int:
                 "hypothetical_pnl": pnl,
                 "resolved_at": result["resolved_at"],
             }
-            outcomes.append(outcome)
+            insert_outcome(outcome)
             new_count += 1
 
             side_str = "YES" if resolved_yes else "NO"
             result_str = "ВЫИГРАЛ" if won else "ПРОИГРАЛ"
             print(f"  [Tracker] {record['question'][:55]} → {side_str} | {result_str} | P&L: {pnl:+.2f}")
-
-    if new_count:
-        _save_outcomes(outcomes)
 
     return new_count
 
@@ -124,12 +110,10 @@ def calibration_score(outcomes: list) -> dict:
     if not outcomes:
         return {}
 
-    # Для калибровки используем вероятность нашей ставки (не всегда our_prob=prob YES)
     brier_sum = 0.0
     buckets: dict[str, dict] = {}
 
     for o in outcomes:
-        # expressed_prob = вероятность того исхода, на который мы ставили
         expressed_prob = o["our_prob"] if o["our_side"] == "YES" else 1 - o["our_prob"]
         actual = 1.0 if o["won"] else 0.0
         brier_sum += (expressed_prob - actual) ** 2
@@ -183,8 +167,8 @@ def win_rate_by_category(outcomes: list) -> dict[str, dict]:
 
 
 def print_calibration_report() -> None:
-    """Загружает outcomes.json и печатает все калибровочные метрики."""
-    outcomes = _load_json(OUTCOMES_FILE)
+    """Загружает outcomes из БД и печатает все калибровочные метрики."""
+    outcomes = load_outcomes()
     if not outcomes:
         return
 

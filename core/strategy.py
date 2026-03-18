@@ -1,12 +1,34 @@
 from __future__ import annotations
 
-import json
-import re
-
 from anthropic import AsyncAnthropic
 import config
 
 client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+
+# Tool schema для structured output — Claude вернёт JSON через tool_use
+_ANALYSIS_TOOL = {
+    "name": "submit_analysis",
+    "description": "Отправить результат анализа рынка предсказаний.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "probability": {
+                "type": "number",
+                "description": "Вероятность события (от 0.01 до 0.99)",
+            },
+            "confidence": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Уверенность в оценке",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Краткое обоснование на 1-2 предложения",
+            },
+        },
+        "required": ["probability", "confidence", "reasoning"],
+    },
+}
 
 
 def _build_news_block(articles: list[dict]) -> str:
@@ -39,41 +61,31 @@ def _build_prompt(question: str, market_price: float, news_block: str, price_cha
 Свежие новости:
 {news_block}
 
-Ответь ТОЛЬКО валидным JSON без markdown и пояснений:
-{{
-  "probability": 0.72,
-  "confidence": "medium",
-  "reasoning": "Краткое обоснование на 1-2 предложения"
-}}
-
 Правила:
 - probability: число от 0.01 до 0.99
-- confidence: "low" | "medium" | "high"
-- Используй "low" если новостей недостаточно или ситуация неясна
-- Не повторяй рыночную цену как свою оценку без весомых оснований"""
+- Используй confidence="low" если новостей недостаточно или ситуация неясна
+- Не повторяй рыночную цену как свою оценку без весомых оснований
+
+Вызови submit_analysis с результатом."""
 
 
-def _parse_response(text: str):
-    # Ищем JSON даже если модель добавила лишний текст
-    match = re.search(r"\{.*?\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group())
-        prob = float(data.get("probability", 0))
-        conf = data.get("confidence", "low")
-        reasoning = data.get("reasoning", "")
-        if not (0.01 <= prob <= 0.99):
-            return None
-        if conf not in ("low", "medium", "high"):
-            return None
-        return {"probability": prob, "confidence": conf, "reasoning": reasoning}
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
+def _parse_tool_response(response) -> dict | None:
+    """Извлекает structured output из tool_use блока."""
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "submit_analysis":
+            data = block.input
+            prob = data.get("probability", 0)
+            conf = data.get("confidence", "low")
+            reasoning = data.get("reasoning", "")
+            if not (0.01 <= prob <= 0.99):
+                return None
+            if conf not in ("low", "medium", "high"):
+                return None
+            return {"probability": prob, "confidence": conf, "reasoning": reasoning}
+    return None
 
 
 def _kelly_bet(our_prob: float, market_price: float) -> float:
-    # b = коэффициент выигрыша (во сколько раз вернётся ставка)
     b = (1 / market_price) - 1
     q = 1 - our_prob
     kelly = (our_prob * b - q) / b
@@ -94,16 +106,17 @@ class Strategy:
             response = await client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=256,
+                tools=[_ANALYSIS_TOOL],
+                tool_choice={"type": "tool", "name": "submit_analysis"},
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
         except Exception as e:
             print(f"  [Claude] Ошибка: {e}")
             return None
 
-        parsed = _parse_response(text)
+        parsed = _parse_tool_response(response)
         if parsed is None:
-            print(f"  [Claude] Не удалось распарсить ответ: {text[:100]}")
+            print(f"  [Claude] Не удалось получить structured output")
             return None
 
         our_prob = parsed["probability"]
@@ -128,7 +141,6 @@ class Strategy:
             bet = _kelly_bet(1 - our_prob, no_price)
             market_prob = no_price
         else:
-            best = max(edge_yes, edge_no)
             print(f"  [Claude] Edge YES={edge_yes:+.1%} NO={edge_no:+.1%} < MIN_EDGE {config.MIN_EDGE:.0%} — пропускаем")
             return None
 
