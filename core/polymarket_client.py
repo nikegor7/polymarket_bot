@@ -14,6 +14,8 @@ COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 MARKETS_CACHE_TTL = 900   # 15 минут
 DAILY_CACHE_TTL = 120     # 2 минуты
 
+FEAR_GREED_URL = "https://api.alternative.me/fng/"
+
 _COIN_MAP = {
     "bitcoin": "bitcoin", "btc": "bitcoin",
     "ethereum": "ethereum", "eth": "ethereum",
@@ -21,6 +23,16 @@ _COIN_MAP = {
     "binance": "binancecoin", "bnb": "binancecoin",
     "coinbase": "coinbase-exchange-token",
     "xrp": "ripple",
+    "cardano": "cardano", "ada": "cardano",
+    "dogecoin": "dogecoin", "doge": "dogecoin",
+    "polygon": "matic-network", "matic": "matic-network",
+    "avalanche": "avalanche-2", "avax": "avalanche-2",
+    "chainlink": "chainlink", "link": "chainlink",
+    "polkadot": "polkadot", "dot": "polkadot",
+    "litecoin": "litecoin", "ltc": "litecoin",
+    "uniswap": "uniswap", "uni": "uniswap",
+    "toncoin": "the-open-network", "ton": "the-open-network",
+    "pepe": "pepe",
 }
 
 
@@ -222,6 +234,22 @@ class PolymarketClient:
                 change_str = f" ({change:+.1f}% 24h)" if change is not None else ""
                 parts.append(f"{name}: ${price:,.0f}{change_str}")
         return ", ".join(parts)
+
+    async def get_fear_greed(self) -> str:
+        """Crypto Fear & Greed Index. Возвращает строку вида 'Fear & Greed: 72 (Greed)' или ''."""
+        try:
+            async with self.session.get(FEAR_GREED_URL, params={"limit": 1}) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+                entry = data.get("data", [{}])[0]
+                value = entry.get("value", "")
+                label = entry.get("value_classification", "")
+                if value:
+                    return f"Fear & Greed Index: {value} ({label})"
+                return ""
+        except Exception:
+            return ""
 
     async def place_bet(self, token_id: str, side: str, amount_usdc: float) -> dict:
         if config.DRY_RUN:

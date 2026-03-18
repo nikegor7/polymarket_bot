@@ -17,6 +17,10 @@ GNEWS_API_KEY: str = _require("GNEWS_API_KEY")
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")  # если задан — используется вместо GNews
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 
+# Telegram (опционально — если не заданы, уведомления отключены)
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
 # Budget
 BUDGET: float = float(os.getenv("BUDGET", "100"))
 MAX_BET: float = float(os.getenv("MAX_BET", "5"))
@@ -49,6 +53,9 @@ CATEGORY_TOPICS: dict = {
     "crypto": [
         "bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "sol",
         "coinbase", "binance", "stablecoin", "defi", "nft", "blockchain", "xrp",
+        "cardano", "ada", "dogecoin", "doge", "polygon", "matic", "avalanche",
+        "avax", "chainlink", "link", "polkadot", "dot", "litecoin", "ltc",
+        "uniswap", "uni", "toncoin", "ton", "pepe", "memecoin",
     ],
     "politics": [
         "trump", "president", "congress", "senate", "fed",

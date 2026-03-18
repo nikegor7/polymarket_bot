@@ -31,7 +31,8 @@ polymarket_bot/
 │   ├── strategy.py              # Claude tool_use анализ + Kelly criterion
 │   ├── logger.py                # запись решений в SQLite
 │   ├── outcome_tracker.py       # отслеживание исходов + калибровка
-│   └── backtester.py            # бэктест: перебор параметров стратегии
+│   ├── backtester.py            # бэктест: перебор параметров стратегии
+│   └── notifier.py              # Telegram уведомления
 │
 ├── dashboard/                   # Streamlit UI
 │   ├── app.py                   # точка входа

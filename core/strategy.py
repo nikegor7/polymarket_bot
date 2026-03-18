@@ -53,7 +53,15 @@ def _build_prompt(question: str, market_price: float, news_block: str, price_cha
 
     crypto_block = f"\nКрипто данные: {crypto_signal}" if crypto_signal else ""
 
-    return f"""Ты — аналитик рынков предсказаний. Оцени вероятность события на основе новостей.
+    crypto_rules = ""
+    if crypto_signal:
+        crypto_rules = """
+- Для крипто-рынков учитывай: текущую цену монеты, 24h тренд, Fear & Greed Index
+- Fear & Greed > 75 = рынок перегрет (вероятность коррекции растёт)
+- Fear & Greed < 25 = рынок в страхе (возможен отскок)
+- Резкий рост цены за 24ч может означать как продолжение тренда, так и откат"""
+
+    return f"""Ты — аналитик рынков предсказаний. Оцени вероятность события на основе новостей и данных.
 
 Вопрос рынка: {question}
 Текущая рыночная цена YES: {market_price:.0%}{price_signal}{crypto_block}
@@ -65,6 +73,7 @@ def _build_prompt(question: str, market_price: float, news_block: str, price_cha
 - probability: число от 0.01 до 0.99
 - Используй confidence="low" если новостей недостаточно или ситуация неясна
 - Не повторяй рыночную цену как свою оценку без весомых оснований
+- Если есть сильный edge — используй confidence="high"{crypto_rules}
 
 Вызови submit_analysis с результатом."""
 

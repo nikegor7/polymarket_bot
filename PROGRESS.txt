@@ -85,7 +85,9 @@ PHASE 5 — Signal Improvement      [IN PROGRESS]
 [x] SQLite вместо JSON (data/bot.db, WAL mode, миграция из JSON)
 [x] Structured output: Claude tool_use вместо regex парсинга
 [x] Backtester: перебор MIN_EDGE × KELLY_FRACTION на исторических данных
-[ ] Специализация в одной нише (крипто — лучший вариант)
+[x] Telegram уведомления (ставки, исходы, сводка цикла, ошибки)
+[x] Крипто специализация: +14 монет, Fear & Greed Index, крипто-промпт
+[x] Специализация в одной нише — крипто (расширенные топики, CoinGecko, F&G)
 
 =========================================
 PHASE 6 — Execution               [BLOCKED: геоблок]

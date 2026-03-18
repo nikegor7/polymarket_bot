@@ -15,6 +15,7 @@ from core.news_monitor import NewsMonitor
 from core.strategy import Strategy
 from core.logger import log_decision, print_summary
 from core.outcome_tracker import check_resolved_markets, print_calibration_report
+from core import notifier
 
 
 def ts():
@@ -39,11 +40,16 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
         print(f"  [{ts()}] {question[:50]} — кэш, пропуск")
         return market, None, 0.0
 
-    # Параллельно: цена за 1ч + крипто сигнал
-    price_change, crypto_signal = await asyncio.gather(
+    # Параллельно: цена за 1ч + крипто сигнал + fear & greed
+    price_change, crypto_signal, fear_greed = await asyncio.gather(
         poly.get_price_change_1h(market["yes_token_id"]),
         poly.get_crypto_signal(question),
+        poly.get_fear_greed(),
     )
+    if fear_greed and crypto_signal:
+        crypto_signal = f"{crypto_signal} | {fear_greed}"
+    elif fear_greed:
+        crypto_signal = fear_greed
 
     if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
         direction = "+" if price_change > 0 else ""
@@ -61,20 +67,24 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
     return market, result, price_change
 
 
-async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strategy, daily_mode: bool = False):
+async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strategy, daily_mode: bool = False) -> int:
+    """Возвращает количество сделанных ставок в цикле."""
     label = "daily" if daily_mode else "обычный"
     print(f"\n[{ts()}] Загружаем рынки ({label})...")
     try:
         markets = await poly.get_daily_markets() if daily_mode else await poly.get_markets()
     except Exception as e:
         print(f"[{ts()}] Ошибка загрузки рынков: {e}")
-        return
+        await notifier.notify_error(f"Ошибка загрузки рынков: {e}")
+        return 0
 
     print(f"[{ts()}] Найдено {len(markets)} рынков — запускаем параллельный анализ...")
 
     # Параллельный анализ всех рынков
     tasks = [_analyze_one(m, news, strategy, poly) for m in markets]
     analyses = await asyncio.gather(*tasks, return_exceptions=True)
+
+    bets_placed = 0
 
     # Логирование и ставки — последовательно
     for item in analyses:
@@ -89,6 +99,9 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
         log_decision(market, result, config.DRY_RUN)
 
         if result:
+            bets_placed += 1
+            await notifier.notify_bet(market, result, config.DRY_RUN)
+
             token_id = market["yes_token_id"] if result["side"] == "YES" else market["no_token_id"]
             spread = await poly.get_spread(token_id)
             if spread > config.MAX_SPREAD:
@@ -101,6 +114,8 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
             except Exception as e:
                 print(f"  [{ts()}] Ошибка ставки: {e}")
 
+    return bets_placed
+
 
 async def main():
     init_db()
@@ -112,6 +127,15 @@ async def main():
     print(f"[{ts()}] Бот запущен | Режим: {mode} | Бюджет: ${config.BUDGET}")
     print(f"[{ts()}] MIN_EDGE={config.MIN_EDGE:.0%} | KELLY={config.KELLY_FRACTION} | MAX_BET=${config.MAX_BET}")
     print(f"[{ts()}] Рынки: {markets_mode} | Интервал: {interval}с | Топ: {config.TOP_MARKETS}")
+    print(f"[{ts()}] Категории: {', '.join(config.ACTIVE_CATEGORIES)}")
+    tg_status = "включены" if config.TELEGRAM_BOT_TOKEN else "отключены"
+    print(f"[{ts()}] Telegram: {tg_status}")
+
+    await notifier.send(
+        f"🚀 <b>Бот запущен</b>\n"
+        f"Режим: {mode} | Рынки: {markets_mode}\n"
+        f"Категории: {', '.join(config.ACTIVE_CATEGORIES)}"
+    )
 
     poly = PolymarketClient()
     news = NewsMonitor()
@@ -125,7 +149,7 @@ async def main():
             print(f"[{ts()}] ЦИКЛ #{cycle}")
             print(f"{'='*60}")
 
-            await run_cycle(poly, news, strategy, daily_mode=daily_mode)
+            bets_placed = await run_cycle(poly, news, strategy, daily_mode=daily_mode)
 
             new_outcomes = await check_resolved_markets()
             if new_outcomes:
@@ -136,6 +160,8 @@ async def main():
                 print_summary(bets)
 
             print_calibration_report()
+
+            await notifier.notify_cycle_summary(cycle, len(bets), bets_placed, new_outcomes)
 
             print(f"\n[{ts()}] Следующий цикл через {interval} сек...")
             await asyncio.sleep(interval)

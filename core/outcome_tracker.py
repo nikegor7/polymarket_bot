@@ -11,6 +11,7 @@ from core.database import (
     load_bets,
     load_outcomes,
 )
+from core import notifier
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
@@ -79,6 +80,7 @@ async def check_resolved_markets() -> int:
             side_str = "YES" if resolved_yes else "NO"
             result_str = "ВЫИГРАЛ" if won else "ПРОИГРАЛ"
             print(f"  [Tracker] {record['question'][:55]} → {side_str} | {result_str} | P&L: {pnl:+.2f}")
+            await notifier.notify_outcome(record["question"], won, pnl, record["side"])
 
     return new_count
 
