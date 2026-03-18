@@ -234,7 +234,7 @@ async def _fetch_resolution(session: aiohttp.ClientSession, condition_id: str) -
     if resolution_price is None:
         return None
 
-    resolved_yes = float(resolution_price) == 1.0
+    resolved_yes = float(resolution_price) >= 0.99
     resolved_at = market.get("resolutionDate") or market.get("endDateIso") or ""
 
     return {"resolved_yes": resolved_yes, "resolved_at": resolved_at}

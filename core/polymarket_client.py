@@ -45,11 +45,15 @@ class PolymarketClient:
 
         try:
             volume = float(m.get("volumeNum") or 0)
+            volume_24hr = float(m.get("volume24hr") or 0)
             liquidity = float(m.get("liquidityNum") or 0)
         except (TypeError, ValueError):
             return None
 
-        if volume < config.MIN_MARKET_VOLUME:
+        if volume_24hr < config.MIN_MARKET_VOLUME:
+            return None
+
+        if volume < config.MIN_MARKET_VOLUME_TOTAL:
             return None
 
         try:
@@ -85,7 +89,7 @@ class PolymarketClient:
             "condition_id": m.get("conditionId"),
             "question": m.get("question"),
             "volume": volume,
-            "volume_24hr": float(m.get("volume24hr") or 0),
+            "volume_24hr": volume_24hr,
             "liquidity": liquidity,
             "yes_price": yes_price,
             "no_price": no_price,
@@ -101,7 +105,9 @@ class PolymarketClient:
         params = {
             "active": "true",
             "closed": "false",
-            "limit": 200,
+            "limit": 500,
+            "_sort": "volume24hr",
+            "_order": "DESC",
         }
 
         if config.MAX_DAYS_TO_CLOSE > 0:
@@ -132,7 +138,9 @@ class PolymarketClient:
             "closed": "false",
             "end_date_min": end_min,
             "end_date_max": end_max,
-            "limit": 200,
+            "limit": 500,
+            "_sort": "volume24hr",
+            "_order": "DESC",
         }
 
         async with self.session.get(f"{GAMMA_BASE}/markets", params=params) as resp:

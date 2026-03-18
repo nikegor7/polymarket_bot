@@ -11,6 +11,7 @@ import config
 GNEWS_BASE = "https://gnews.io/api/v4/search"
 TAVILY_BASE = "https://api.tavily.com/search"
 CACHE_FILE = Path("data/news_cache.json")
+GNEWS_DAILY_LIMIT = 95  # оставляем запас от 100 req/day
 
 STOPWORDS = {
     "will", "the", "a", "an", "be", "is", "are", "was", "were",
@@ -52,6 +53,8 @@ class NewsMonitor:
     def __init__(self):
         self.session: aiohttp.ClientSession | None = None
         self.cache: dict = _load_cache()
+        self._gnews_calls_today: int = 0
+        self._gnews_day: str = ""  # YYYY-MM-DD для сброса счётчика
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -113,6 +116,16 @@ class NewsMonitor:
         return articles
 
     async def _fetch_gnews(self, query: str) -> list[dict]:
+        from datetime import date
+        today = date.today().isoformat()
+        if self._gnews_day != today:
+            self._gnews_day = today
+            self._gnews_calls_today = 0
+        if self._gnews_calls_today >= GNEWS_DAILY_LIMIT:
+            print(f"  [GNews] Лимит {GNEWS_DAILY_LIMIT} запросов/день исчерпан — пропуск")
+            return []
+        self._gnews_calls_today += 1
+
         params = {
             "q": query,
             "lang": "en",

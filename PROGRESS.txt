@@ -1,0 +1,94 @@
+PROGRESS LOG — Polymarket Prediction Bot
+=========================================
+Читай ROADMAP.md перед каждой сессией.
+Текущий приоритет: Phase 5 (сигналы) → Phase 6 (execution)
+
+=========================================
+PHASE 1 — Foundation              [DONE]
+=========================================
+[x] venv, requirements.txt, .env, .gitignore
+[x] config.py — централизованные настройки
+[x] polymarket_client.py — Gamma API, get_markets()
+[x] news_monitor.py — GNews + кэш 4ч + _extract_query
+[x] strategy.py — Claude Haiku + Kelly criterion
+[x] logger.py — bet_history.json
+[x] main.py — полный цикл DRY RUN
+
+=========================================
+PHASE 2 — Daily Markets & Analysis [DONE]
+=========================================
+[x] get_daily_markets() → /markets?end_date_min/max (не Events API — возвращал спорт)
+[x] DAILY_MODE + DAILY_POLL_INTERVAL=60s + кэш 120сек
+[x] Сортировка по end_date ASC (ближайшие в топе)
+[x] NO side betting: dual edge, Kelly для обеих сторон
+[x] get_price_change_1h() — CLOB prices-history → в Claude-промпт
+[x] get_spread() — CLOB book → фильтр в LIVE, предупреждение в DRY RUN
+[x] _parse_market() — хелпер переиспользуется в обоих методах
+[x] Фикс Unicode regex: [A-Za-z0-9]+ → [\w]+ (Sébastien, León, Español)
+[x] Фикс Windows UTF-8: stdout.reconfigure(encoding='utf-8')
+[x] from __future__ import annotations (Python 3.9 совместимость)
+[x] Дата закрытия рынка в консольном выводе
+[x] MAX_DAYS_TO_CLOSE, PRICE_CHANGE_THRESHOLD, MAX_SPREAD в config.py
+[!] Тег API (Этап 14) отменён — теги Polymarket слишком гранулярные
+[!] Наблюдение: 14.03.2026 daily рынки = только испанские выборы (GNews не покрывает)
+
+=========================================
+PHASE 3 — Outcome Tracking        [DONE]
+=========================================
+
+--- 3.1 Реструктуризация файлов ---
+[x] Создать core/, dashboard/, data/
+[x] Перенести логику в core/
+[x] Перенести JSON файлы в data/
+[x] Обновить импорты везде
+[x] Добавить data/ в .gitignore
+
+--- 3.2 outcome_tracker.py ---
+[x] check_resolved_markets() — найти рынки где end_date прошёл
+[x] Получить фактический исход через Gamma API (resolved, resolutionPrice)
+[x] Записывать в data/outcomes.json (won, hypothetical_pnl, resolved_at)
+[x] Запускать автоматически в конце каждого цикла main.py
+[x] Фикс: float resolution_price >= 0.99 вместо == 1.0 (tolerance)
+
+--- 3.3 Calibration metrics ---
+[x] calibration_score() — Brier score + диапазоны вероятности
+[x] hypothetical_roi() — гипотетический P&L
+[x] win_rate_by_category() — точность по темам
+[x] Вывод метрик в конце цикла (рядом со статистикой)
+
+=========================================
+PHASE 4 — Streamlit Dashboard     [DONE]
+=========================================
+
+--- Setup ---
+[x] pip install streamlit plotly pandas
+[x] dashboard/app.py — точка входа
+[x] dashboard/pages/ структура
+
+--- Страницы ---
+[x] 01_overview.py  — KPI карточки + P&L график + топ предсказаний
+[x] 02_bets.py      — таблица ставок с фильтрами (статус/сторона/дата/тема)
+[x] 03_markets.py   — браузер рынков с ценами + фильтр по категориям
+[x] 04_calibration.py — наша prob vs фактический win rate (Reliability Diagram)
+
+=========================================
+PHASE 5 — Signal Improvement      [IN PROGRESS]
+=========================================
+[x] Tavily API как замена/fallback GNews (real-time поиск)
+[x] CoinGecko крипто сигналы (цена + 24h change) → в Claude-промпт
+[x] AsyncAnthropic — убрать блокировку event loop
+[x] asyncio.gather() — параллельный анализ рынков
+[x] CATEGORY_TOPICS + ACTIVE_CATEGORIES в config.py
+[x] MIN_MARKET_VOLUME_TOTAL — фильтр по общему объёму
+[x] Rate limiter для GNews API (100 req/day защита)
+[x] pytest тесты для Kelly, edge detection, outcome resolution
+[ ] Специализация в одной нише (крипто — лучший вариант)
+
+=========================================
+PHASE 6 — Execution               [BLOCKED: геоблок]
+=========================================
+[ ] py-clob-client: реальные ставки
+[ ] Portfolio-level Kelly
+[ ] Daily loss limit (-20% = стоп)
+[ ] Защита от дублирования позиций
+[ ] WebSocket real-time цены

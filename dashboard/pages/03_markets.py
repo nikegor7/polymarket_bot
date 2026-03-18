@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -12,32 +13,59 @@ from core.polymarket_client import PolymarketClient
 st.set_page_config(page_title="Markets", page_icon="🌍", layout="wide")
 st.title("🌍 Market Browser")
 
+CAT_LABELS = {
+    "crypto":      "🪙 Крипто",
+    "politics":    "🏛 Политика",
+    "economics":   "📊 Экономика",
+    "tech":        "💻 Технологии",
+    "geopolitics": "🌐 Геополитика",
+}
 
-@st.cache_data(ttl=120)
-def fetch_markets(daily: bool) -> list:
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_markets(daily: bool, category: str) -> list:
+    keywords = config.CATEGORY_TOPICS.get(category, [])
+
     async def _run():
         async with PolymarketClient() as client:
             if daily:
-                return await client.get_daily_markets(limit=50)
+                markets = await client.get_daily_markets(limit=200)
             else:
-                return await client.get_markets(limit=50)
+                markets = await client.get_markets(limit=200)
+        return [
+            m for m in markets
+            if any(re.search(r'\b' + re.escape(kw.strip()) + r'\b', m["question"].lower()) for kw in keywords)
+        ]
     return asyncio.run(_run())
 
 
-col_mode, col_refresh = st.columns([3, 1])
-daily_mode = col_mode.toggle("Daily (закрываются в 24ч)", value=True)
-if col_refresh.button("Обновить"):
-    st.cache_data.clear()
+# --- Настройки ---
+daily_mode = st.toggle("Daily (закрываются в 24ч)", value=False)
 
-with st.spinner("Загружаем рынки..."):
+st.markdown("**Выберите категорию:**")
+cols = st.columns(len(CAT_LABELS))
+for i, (cat, label) in enumerate(CAT_LABELS.items()):
+    if cols[i].button(label, use_container_width=True):
+        st.session_state["market_category"] = cat
+        st.cache_data.clear()
+
+# --- Загрузка только после выбора категории ---
+if "market_category" not in st.session_state:
+    st.info("Нажмите на категорию чтобы загрузить рынки.")
+    st.stop()
+
+category = st.session_state["market_category"]
+st.caption(f"Категория: **{CAT_LABELS[category]}**")
+
+with st.spinner(f"Загружаем {CAT_LABELS[category]}..."):
     try:
-        markets = fetch_markets(daily_mode)
+        markets = fetch_markets(daily_mode, category)
     except Exception as e:
         st.error(f"Ошибка загрузки: {e}")
         st.stop()
 
 if not markets:
-    st.warning("Рынков не найдено по текущим фильтрам.")
+    st.warning("Рынков не найдено. Попробуй отключить Daily режим.")
     st.stop()
 
 st.caption(f"Найдено {len(markets)} рынков")
