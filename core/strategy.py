@@ -136,21 +136,20 @@ class Strategy:
             print(f"  [Claude] conf=low — пропускаем")
             return None
 
-        edge_yes = our_prob - yes_price
-        edge_no = (1 - our_prob) - no_price
-
-        if edge_yes >= edge_no and edge_yes >= config.MIN_EDGE:
+        # Ставим только на ту сторону, в которую верит Claude
+        if our_prob >= 0.5:
             side = "YES"
-            edge = edge_yes
-            bet = _kelly_bet(our_prob, yes_price)
+            edge = our_prob - yes_price
             market_prob = yes_price
-        elif edge_no > edge_yes and edge_no >= config.MIN_EDGE:
-            side = "NO"
-            edge = edge_no
-            bet = _kelly_bet(1 - our_prob, no_price)
-            market_prob = no_price
+            bet = _kelly_bet(our_prob, yes_price) if edge >= config.MIN_EDGE else 0
         else:
-            print(f"  [Claude] Edge YES={edge_yes:+.1%} NO={edge_no:+.1%} < MIN_EDGE {config.MIN_EDGE:.0%} — пропускаем")
+            side = "NO"
+            edge = (1 - our_prob) - no_price
+            market_prob = no_price
+            bet = _kelly_bet(1 - our_prob, no_price) if edge >= config.MIN_EDGE else 0
+
+        if edge < config.MIN_EDGE:
+            print(f"  [Claude] Edge {side}={edge:+.1%} < MIN_EDGE {config.MIN_EDGE:.0%} — пропускаем")
             return None
 
         if bet <= 0:

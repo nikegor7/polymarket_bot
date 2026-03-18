@@ -141,30 +141,48 @@ async def main():
     news = NewsMonitor()
     strategy = Strategy()
 
-    async with poly, news:
-        cycle = 0
-        while True:
-            cycle += 1
-            print(f"\n{'='*60}")
-            print(f"[{ts()}] ЦИКЛ #{cycle}")
-            print(f"{'='*60}")
+    try:
+        async with poly, news:
+            # Telegram команды — отдельная задача, работает ВСЕГДА (даже во время анализа)
+            cmd_task = asyncio.create_task(_command_loop())
+            _ = cmd_task  # prevent garbage collection
 
-            bets_placed = await run_cycle(poly, news, strategy, daily_mode=daily_mode)
+            cycle = 0
+            while True:
+                cycle += 1
+                print(f"\n{'='*60}")
+                print(f"[{ts()}] ЦИКЛ #{cycle}")
+                print(f"{'='*60}")
 
-            new_outcomes = await check_resolved_markets()
-            if new_outcomes:
-                print(f"[{ts()}] Трекер: записано {new_outcomes} новых исходов")
+                bets_placed = await run_cycle(poly, news, strategy, daily_mode=daily_mode)
 
-            bets = load_bets()
-            if bets:
-                print_summary(bets)
+                new_outcomes = await check_resolved_markets()
+                if new_outcomes:
+                    print(f"[{ts()}] Трекер: записано {new_outcomes} новых исходов")
 
-            print_calibration_report()
+                bets = load_bets()
+                if bets:
+                    print_summary(bets)
 
-            await notifier.notify_cycle_summary(cycle, len(bets), bets_placed, new_outcomes)
+                print_calibration_report()
 
-            print(f"\n[{ts()}] Следующий цикл через {interval} сек...")
-            await asyncio.sleep(interval)
+                await notifier.notify_cycle_summary(cycle, len(bets), bets_placed, new_outcomes)
+
+                print(f"\n[{ts()}] Следующий цикл через {interval} сек...")
+                await asyncio.sleep(interval)
+    finally:
+        await notifier.close()
+
+
+async def _command_loop():
+    """Фоновый цикл — проверяет Telegram команды каждые 3 сек, не зависит от анализа."""
+    print(f"[{ts()}] Telegram command loop запущен")
+    while True:
+        try:
+            await notifier.handle_commands()
+        except Exception as e:
+            print(f"  [TG] Ошибка обработки команд: {e}")
+        await asyncio.sleep(3)
 
 
 if __name__ == "__main__":

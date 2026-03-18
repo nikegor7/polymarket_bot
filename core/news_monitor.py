@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -55,6 +56,7 @@ class NewsMonitor:
         self.cache: dict = _load_cache()
         self._gnews_calls_today: int = 0
         self._gnews_day: str = ""  # YYYY-MM-DD для сброса счётчика
+        self._fetch_sem = asyncio.Semaphore(1)  # последовательные запросы к API (GNews 429)
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -83,9 +85,10 @@ class NewsMonitor:
         return articles, True
 
     async def _fetch(self, query: str) -> list[dict]:
-        if config.TAVILY_API_KEY:
-            return await self._fetch_tavily(query)
-        return await self._fetch_gnews(query)
+        async with self._fetch_sem:
+            if config.TAVILY_API_KEY:
+                return await self._fetch_tavily(query)
+            return await self._fetch_gnews(query)
 
     async def _fetch_tavily(self, query: str) -> list[dict]:
         payload = {

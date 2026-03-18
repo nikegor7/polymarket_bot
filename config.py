@@ -21,6 +21,15 @@ POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Разрешённые Telegram user IDs (через запятую). Только они могут слать команды боту.
+# По умолчанию = TELEGRAM_CHAT_ID (только ты)
+_allowed_raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+TELEGRAM_ALLOWED_USERS: set[int] = (
+    {int(x.strip()) for x in _allowed_raw.split(",") if x.strip()}
+    if _allowed_raw
+    else {int(TELEGRAM_CHAT_ID)} if TELEGRAM_CHAT_ID else set()
+)
+
 # Budget
 BUDGET: float = float(os.getenv("BUDGET", "100"))
 MAX_BET: float = float(os.getenv("MAX_BET", "5"))
@@ -38,11 +47,13 @@ DAILY_POLL_INTERVAL: int = 60   # daily рынки опрашивать кажд
 TOP_MARKETS: int = 10
 MIN_MARKET_VOLUME: int = 1000   # минимальный объём 24h
 MIN_MARKET_VOLUME_TOTAL: int = 10000  # минимальный общий объём
-NEWS_CACHE_TTL: int = 14400  # 4 часа — вписываемся в 100 req/day GNews
+_NEWS_CACHE_TTL_NORMAL: int = 14400  # 4 часа для обычного режима
+_NEWS_CACHE_TTL_DAILY: int = 1800   # 30 мин для daily режима (рынки быстро разрешаются)
 
 # Daily mode
 DAILY_MODE: bool = os.getenv("DAILY_MODE", "false").lower() == "true"
 MAX_DAYS_TO_CLOSE: int = int(os.getenv("MAX_DAYS_TO_CLOSE", "0"))  # 0 = без ограничения
+NEWS_CACHE_TTL: int = _NEWS_CACHE_TTL_DAILY if DAILY_MODE else _NEWS_CACHE_TTL_NORMAL
 
 # CLOB фильтры (Этапы 12-13)
 MAX_SPREAD: float = float(os.getenv("MAX_SPREAD", "0.05"))          # макс спред для ставки

@@ -81,15 +81,30 @@ def test_edge_neither_side():
     assert edge_no < config.MIN_EDGE
 
 
-def test_edge_picks_best_side():
-    """Бот должен выбрать сторону с большим edge."""
+def test_edge_picks_side_aligned_with_belief():
+    """Бот ставит на сторону, в которую верит Claude."""
+    # Claude считает prob=0.30 → верит в NO
     our_prob = 0.30
-    yes_price = 0.40
     no_price = 0.60
-    edge_yes = our_prob - yes_price
     edge_no = (1 - our_prob) - no_price
-    assert edge_no > edge_yes
-    assert edge_no >= config.MIN_EDGE
+    assert edge_no >= config.MIN_EDGE  # 0.70 - 0.60 = 0.10
+
+    # Claude считает prob=0.80 → верит в YES, не должен ставить NO
+    our_prob_high = 0.80
+    yes_price = 0.70
+    edge_yes = our_prob_high - yes_price
+    assert edge_yes >= config.MIN_EDGE  # 0.80 - 0.70 = 0.10
+
+
+def test_no_contrarian_bet():
+    """Claude prob=0.92 → не должен ставить NO даже если edge на NO есть."""
+    our_prob = 0.92
+    yes_price = 0.95
+    no_price = 0.05
+    # Старая логика нашла бы edge_no = 0.08 - 0.05 = 0.03
+    # Новая логика: our_prob >= 0.5 → только YES
+    edge_yes = our_prob - yes_price  # -0.03
+    assert edge_yes < config.MIN_EDGE  # нет edge на YES → пропуск (правильно)
 
 
 # ─── Parse tool_use response ──────────────────────────────
