@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path("data/bot.db")
@@ -62,6 +62,17 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Добавляет колонки, которых может не быть в старых БД."""
+    cursor = conn.execute("PRAGMA table_info(bets)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "prompt_text" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN prompt_text TEXT DEFAULT ''")
+    if "raw_response" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN raw_response TEXT DEFAULT ''")
+    conn.commit()
+
+
 def init_db() -> None:
     """Создаёт таблицы и мигрирует данные из JSON при первом запуске."""
     conn = get_connection()
@@ -69,6 +80,7 @@ def init_db() -> None:
         conn.execute(_CREATE_BETS)
         conn.execute(_CREATE_OUTCOMES)
         conn.commit()
+        _ensure_columns(conn)
         _migrate_json(conn)
     finally:
         conn.close()
@@ -127,12 +139,14 @@ def insert_bet(record: dict) -> None:
     try:
         conn.execute(
             "INSERT INTO bets (timestamp, question, condition_id, end_date, "
-            "our_prob, market_prob, edge, confidence, side, bet_amount, dry_run, reasoning) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "our_prob, market_prob, edge, confidence, side, bet_amount, dry_run, reasoning, "
+            "prompt_text, raw_response) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (record["timestamp"], record["question"], record.get("condition_id", ""),
              record.get("end_date", ""), record["our_prob"], record["market_prob"],
              record["edge"], record["confidence"], record["side"], record["bet_amount"],
-             1 if record.get("dry_run", True) else 0, record.get("reasoning", "")),
+             1 if record.get("dry_run", True) else 0, record.get("reasoning", ""),
+             record.get("prompt_text", ""), record.get("raw_response", "")),
         )
         conn.commit()
     finally:
@@ -191,5 +205,48 @@ def get_tracked_condition_ids() -> set[str]:
     try:
         rows = conn.execute("SELECT condition_id FROM outcomes").fetchall()
         return {r["condition_id"] for r in rows}
+    finally:
+        conn.close()
+
+
+# ─── Dedup & Limits ──────────────────────────────────────
+
+def has_recent_bet(condition_id: str, hours: int = 24) -> bool:
+    """True если на этот condition_id уже ставили за последние N часов."""
+    conn = get_connection()
+    try:
+        cutoff = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            "SELECT COUNT(*) FROM bets WHERE condition_id = ? AND timestamp > ?",
+            (condition_id, cutoff),
+        ).fetchone()
+        return row[0] > 0
+    finally:
+        conn.close()
+
+
+def total_bet_amount_today() -> float:
+    """Сумма ставок за сегодня."""
+    conn = get_connection()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        row = conn.execute(
+            "SELECT COALESCE(SUM(bet_amount), 0) FROM bets WHERE timestamp LIKE ?",
+            (f"{today}%",),
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
+def count_open_bets() -> int:
+    """Количество ставок без отслеженного результата."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM bets b WHERE NOT EXISTS "
+            "(SELECT 1 FROM outcomes o WHERE o.condition_id = b.condition_id)"
+        ).fetchone()
+        return row[0]
     finally:
         conn.close()

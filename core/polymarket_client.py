@@ -89,6 +89,15 @@ class PolymarketClient:
         if yes_price == 0 or no_price == 0:
             return None
 
+        # Фильтр экстремальных цен — tail events и уже решённые рынки
+        if yes_price < config.MIN_YES_PRICE or yes_price > config.MAX_YES_PRICE:
+            return None
+
+        # Валидация condition_id
+        condition_id = m.get("conditionId") or ""
+        if len(condition_id) < 10:
+            return None
+
         question_lower = (m.get("question") or "").lower()
         if not any(re.search(r'\b' + re.escape(topic) + r'\b', question_lower) for topic in config.ALLOWED_TOPICS):
             return None
@@ -98,7 +107,7 @@ class PolymarketClient:
         no_token_id = clob_token_ids[no_idx] if len(clob_token_ids) > no_idx else ""
 
         return {
-            "condition_id": m.get("conditionId"),
+            "condition_id": condition_id,
             "question": m.get("question"),
             "volume": volume,
             "volume_24hr": volume_24hr,

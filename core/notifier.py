@@ -27,6 +27,7 @@ import config
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 _poll_offset: int = 0
+_consecutive_errors: int = 0  # для backoff при сетевых ошибках
 
 
 def _tg_post(method: str, payload: dict) -> tuple[int, dict]:
@@ -94,25 +95,37 @@ async def send(text: str, silent: bool = False, chat_id: str = "") -> bool:
             return False
         return True
     except Exception as e:
-        print(f"  [TG] Ошибка отправки: {type(e).__name__}: {e}")
+        if _consecutive_errors <= 2:
+            print(f"  [TG] Ошибка отправки: {type(e).__name__}: {e}")
         return False
 
 
 async def poll_commands() -> list[dict]:
     """Получает новые сообщения от пользователей.
     Возвращает список {user_id, chat_id, text}."""
-    global _poll_offset
+    global _poll_offset, _consecutive_errors
     if not _enabled():
         return []
+
+    # Backoff при повторных ошибках: 3с → 6с → 12с → ... до 60с
+    if _consecutive_errors > 0:
+        delay = min(3 * (2 ** (_consecutive_errors - 1)), 60)
+        await asyncio.sleep(delay)
 
     params = {"offset": _poll_offset, "timeout": 0, "allowed_updates": '["message","callback_query"]'}
 
     try:
         status, data = await asyncio.to_thread(_tg_get, "getUpdates", params)
         if status != 200:
+            _consecutive_errors += 1
             return []
+        _consecutive_errors = 0
     except Exception as e:
-        print(f"  [TG] Ошибка poll: {type(e).__name__}: {e}")
+        _consecutive_errors += 1
+        if _consecutive_errors <= 2:
+            print(f"  [TG] Ошибка poll: {type(e).__name__}: {e}")
+        elif _consecutive_errors == 3:
+            print(f"  [TG] Сеть недоступна, подавляю повторные ошибки (backoff {min(3 * (2 ** (_consecutive_errors - 1)), 60)}с)")
         return []
 
     messages = []

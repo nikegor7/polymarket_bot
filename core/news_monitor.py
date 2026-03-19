@@ -11,8 +11,29 @@ import config
 
 GNEWS_BASE = "https://gnews.io/api/v4/search"
 TAVILY_BASE = "https://api.tavily.com/search"
+CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1/posts/"
 CACHE_FILE = Path("data/news_cache.json")
 GNEWS_DAILY_LIMIT = 95  # оставляем запас от 100 req/day
+EMPTY_CACHE_TTL = 120   # пустые ответы кэшируем только 2 мин (а не 30 мин)
+
+# Маппинг ключевых слов → тикеры CryptoPanic
+_CRYPTO_TICKERS: dict[str, str] = {
+    "bitcoin": "BTC", "btc": "BTC",
+    "ethereum": "ETH", "eth": "ETH",
+    "solana": "SOL", "sol": "SOL",
+    "xrp": "XRP",
+    "cardano": "ADA", "ada": "ADA",
+    "dogecoin": "DOGE", "doge": "DOGE",
+    "polygon": "MATIC", "matic": "MATIC",
+    "avalanche": "AVAX", "avax": "AVAX",
+    "chainlink": "LINK", "link": "LINK",
+    "polkadot": "DOT", "dot": "DOT",
+    "litecoin": "LTC", "ltc": "LTC",
+    "uniswap": "UNI", "uni": "UNI",
+    "toncoin": "TON", "ton": "TON",
+    "pepe": "PEPE",
+    "binance": "BNB", "bnb": "BNB",
+}
 
 STOPWORDS = {
     "will", "the", "a", "an", "be", "is", "are", "was", "were",
@@ -66,21 +87,46 @@ class NewsMonitor:
         await self.session.close()
         _save_cache(self.cache)
 
+    def _detect_crypto_tickers(self, question: str) -> list[str]:
+        """Извлекает тикеры криптовалют из вопроса рынка."""
+        q_lower = question.lower()
+        tickers = list(dict.fromkeys(
+            ticker for kw, ticker in _CRYPTO_TICKERS.items() if kw in q_lower
+        ))
+        return tickers
+
     async def get_news(self, question: str):
         """Возвращает (articles, is_fresh).
-        is_fresh=True  — данные только что получены из GNews (стоит звать Claude).
-        is_fresh=False — из кэша (Claude пропускаем).
+        is_fresh=True  — данные только что получены из API.
+        is_fresh=False — из кэша (статьи есть, но не новые).
+        Пустые ответы кэшируются только на 2 мин.
+        Для крипто вопросов сначала CryptoPanic, потом fallback.
         """
         query = _extract_query(question)
         if not query:
             return [], False
 
-        cached = self.cache.get(query)
-        if cached and (time.time() - cached["fetched_at"]) < config.NEWS_CACHE_TTL:
-            return cached["articles"], False
+        # Для крипто — используем CryptoPanic ключ кэша
+        tickers = self._detect_crypto_tickers(question)
+        cache_key = f"cp:{','.join(tickers)}" if tickers and config.CRYPTOPANIC_API_KEY else query
 
-        articles = await self._fetch(query)
-        self.cache[query] = {"articles": articles, "fetched_at": time.time()}
+        cached = self.cache.get(cache_key)
+        if cached:
+            ttl = EMPTY_CACHE_TTL if not cached["articles"] else config.NEWS_CACHE_TTL
+            if (time.time() - cached["fetched_at"]) < ttl:
+                return cached["articles"], False
+
+        # Крипто → CryptoPanic (если есть ключ и тикеры)
+        articles = []
+        if tickers and config.CRYPTOPANIC_API_KEY:
+            articles = await self._fetch_cryptopanic(tickers)
+
+        # Fallback на общий источник если CryptoPanic не дал результатов
+        if not articles:
+            articles = await self._fetch(query)
+            cache_key = query  # кэшируем под обычным ключом
+
+        self.cache[cache_key] = {"articles": articles, "fetched_at": time.time()}
         _save_cache(self.cache)
         return articles, True
 
@@ -88,7 +134,57 @@ class NewsMonitor:
         async with self._fetch_sem:
             if config.TAVILY_API_KEY:
                 return await self._fetch_tavily(query)
+            # Задержка 1с между запросами — GNews бьёт 429 при частых обращениях
+            await asyncio.sleep(1.0)
             return await self._fetch_gnews(query)
+
+    async def _fetch_cryptopanic(self, tickers: list[str]) -> list[dict]:
+        """Получает крипто-новости из CryptoPanic API с sentiment."""
+        params = {
+            "auth_token": config.CRYPTOPANIC_API_KEY,
+            "currencies": ",".join(tickers),
+            "filter": "rising",
+            "public": "true",
+        }
+        try:
+            async with self.session.get(CRYPTOPANIC_BASE, params=params) as resp:
+                if resp.status == 429:
+                    print(f"  [CryptoPanic] Rate limit — fallback")
+                    return []
+                resp.raise_for_status()
+                data = await resp.json()
+        except Exception as e:
+            # Скрываем API ключ из сообщения об ошибке
+            err_msg = str(e).replace(config.CRYPTOPANIC_API_KEY, "***")
+            print(f"  [CryptoPanic] Ошибка: {err_msg}")
+            return []
+
+        articles = []
+        for post in data.get("results", [])[:5]:
+            title = post.get("title", "").strip()
+            if not title:
+                continue
+            # Sentiment из votes
+            votes = post.get("votes", {})
+            pos = votes.get("positive", 0)
+            neg = votes.get("negative", 0)
+            sentiment = ""
+            if pos + neg > 0:
+                sentiment = "bullish" if pos > neg else "bearish" if neg > pos else "neutral"
+
+            desc_parts = []
+            if sentiment:
+                desc_parts.append(f"Sentiment: {sentiment} (+{pos}/-{neg})")
+            source = post.get("source", {}).get("title", "")
+            if source:
+                desc_parts.append(f"Source: {source}")
+
+            articles.append({
+                "title": title,
+                "description": " | ".join(desc_parts),
+                "publishedAt": post.get("published_at", ""),
+            })
+        return articles
 
     async def _fetch_tavily(self, query: str) -> list[dict]:
         payload = {
@@ -141,7 +237,8 @@ class NewsMonitor:
                 resp.raise_for_status()
                 data = await resp.json()
         except Exception as e:
-            print(f"  [GNews] Ошибка запроса '{query}': {e}")
+            err_msg = str(e).replace(config.GNEWS_API_KEY, "***")
+            print(f"  [GNews] Ошибка запроса '{query}': {err_msg}")
             return []
 
         articles = []

@@ -181,7 +181,7 @@ def test_parse_empty_content():
 # ─── News block builder ───────────────────────────────────
 
 def test_build_news_empty():
-    assert "не найдено" in _build_news_block([])
+    assert "No recent news" in _build_news_block([])
 
 
 def test_build_news_formats_articles():

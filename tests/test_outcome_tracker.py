@@ -35,11 +35,12 @@ def test_pnl_lose_yes():
 
 
 def test_pnl_win_no():
-    """Ставка NO, рынок resolved NO — выигрыш."""
+    """Ставка NO, рынок resolved NO — выигрыш.
+    market_prob = yes_price = 0.45, значит no_price = 0.55.
+    Выигрыш: 2.0 * (1/0.55 - 1) = 2.0 * 0.8182 = 1.6364"""
     pnl = _calc_hypothetical_pnl("NO", 0.30, 0.45, 2.0, resolved_yes=False)
-    # Выигрыш: 2.0 * (1/0.45 - 1) = 2.0 * 1.2222 = 2.4444
     assert pnl > 0
-    assert abs(pnl - 2.4444) < 0.01
+    assert abs(pnl - 1.6364) < 0.01
 
 
 def test_pnl_lose_no():

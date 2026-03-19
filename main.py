@@ -9,7 +9,7 @@ if sys.platform == "win32":
 from datetime import datetime
 
 import config
-from core.database import init_db, load_bets
+from core.database import init_db, load_bets, has_recent_bet, total_bet_amount_today, count_open_bets
 from core.polymarket_client import PolymarketClient
 from core.news_monitor import NewsMonitor
 from core.strategy import Strategy
@@ -26,38 +26,64 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
     """Анализирует один рынок: новости + цена + крипто сигнал + Claude.
     Возвращает (market, result, price_change) или (market, None, 0) при пропуске."""
     question = market["question"]
-    try:
-        articles, is_fresh = await news.get_news(question)
-    except Exception as e:
-        print(f"  [{ts()}] {question[:50]} — ошибка новостей: {e}")
+    condition_id = market.get("condition_id", "")
+
+    # Дедупликация: не ставить на один рынок чаще чем раз в 24ч
+    if condition_id and has_recent_bet(condition_id):
+        print(f"  [{ts()}] {question[:50]} — уже ставили за 24ч, пропуск")
         return market, None, 0.0
 
-    if not articles:
-        print(f"  [{ts()}] {question[:50]} — новостей нет, пропуск")
-        return market, None, 0.0
+    # Параллельно: новости + цена за 1ч + крипто сигнал + fear & greed
+    news_task = news.get_news(question)
+    price_task = poly.get_price_change_1h(market["yes_token_id"])
+    crypto_task = poly.get_crypto_signal(question)
+    fg_task = poly.get_fear_greed()
 
-    if not is_fresh:
-        print(f"  [{ts()}] {question[:50]} — кэш, пропуск")
-        return market, None, 0.0
+    results = await asyncio.gather(news_task, price_task, crypto_task, fg_task, return_exceptions=True)
 
-    # Параллельно: цена за 1ч + крипто сигнал + fear & greed
-    price_change, crypto_signal, fear_greed = await asyncio.gather(
-        poly.get_price_change_1h(market["yes_token_id"]),
-        poly.get_crypto_signal(question),
-        poly.get_fear_greed(),
-    )
+    # Новости
+    if isinstance(results[0], Exception):
+        print(f"  [{ts()}] {question[:50]} — ошибка новостей: {results[0]}")
+        articles, is_fresh = [], False
+    else:
+        articles, is_fresh = results[0]
+
+    # Цена, крипто, fear & greed
+    price_change = results[1] if not isinstance(results[1], Exception) else 0.0
+    crypto_signal = results[2] if not isinstance(results[2], Exception) else ""
+    fear_greed = results[3] if not isinstance(results[3], Exception) else ""
+
+    # Fear & Greed только для крипто рынков (где есть CoinGecko сигнал)
     if fear_greed and crypto_signal:
         crypto_signal = f"{crypto_signal} | {fear_greed}"
-    elif fear_greed:
-        crypto_signal = fear_greed
 
-    if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
-        direction = "+" if price_change > 0 else ""
-        print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
-    if crypto_signal:
+    # Решаем, есть ли достаточно данных для анализа
+    has_news = bool(articles)
+    has_crypto = bool(crypto_signal)
+
+    if not has_news and not has_crypto:
+        print(f"  [{ts()}] {question[:50]} — нет данных (ни новостей, ни крипто), пропуск")
+        return market, None, 0.0
+
+    if not has_news and has_crypto:
         print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
+        print(f"  [{ts()}] {question[:50]} — нет новостей, но есть крипто данные — анализируем...")
+    elif not is_fresh:
+        # Кэшированные новости — всё равно анализируем (Claude дёшев)
+        if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
+            direction = "+" if price_change > 0 else ""
+            print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
+        if crypto_signal:
+            print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
+        print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей (кэш), анализируем...")
+    else:
+        if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
+            direction = "+" if price_change > 0 else ""
+            print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
+        if crypto_signal:
+            print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
+        print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей, анализируем...")
 
-    print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей, анализируем...")
     try:
         result = await strategy.evaluate(market, articles, price_change_1h=price_change, crypto_signal=crypto_signal)
     except Exception as e:
@@ -69,6 +95,16 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
 
 async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strategy, daily_mode: bool = False) -> int:
     """Возвращает количество сделанных ставок в цикле."""
+    # Проверка лимитов перед циклом
+    daily_total = total_bet_amount_today()
+    if daily_total >= config.DAILY_BET_LIMIT:
+        print(f"[{ts()}] Дневной лимит: ${daily_total:.2f} >= ${config.DAILY_BET_LIMIT} — пропуск цикла")
+        return 0
+    open_count = count_open_bets()
+    if open_count >= config.MAX_OPEN_BETS:
+        print(f"[{ts()}] Макс открытых ставок: {open_count} >= {config.MAX_OPEN_BETS} — пропуск цикла")
+        return 0
+
     label = "daily" if daily_mode else "обычный"
     print(f"\n[{ts()}] Загружаем рынки ({label})...")
     try:

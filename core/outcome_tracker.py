@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timezone
 
 import aiohttp
@@ -15,12 +16,19 @@ from core import notifier
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
+# Cooldown: не проверять один и тот же рынок чаще чем раз в час
+_last_checked: dict[str, float] = {}
+_CHECK_COOLDOWN = 3600  # секунд
+
 
 def _calc_hypothetical_pnl(side: str, our_prob: float, market_prob: float, bet_amount: float, resolved_yes: bool) -> float:
-    """Гипотетический P&L если бы ставка была реальной."""
+    """Гипотетический P&L если бы ставка была реальной.
+    market_prob = yes_price (вероятность YES по рынку)."""
     won = (side == "YES" and resolved_yes) or (side == "NO" and not resolved_yes)
     if won:
-        price = market_prob
+        # Цена стороны: YES = market_prob, NO = 1 - market_prob
+        price = market_prob if side == "YES" else (1 - market_prob)
+        price = max(price, 0.001)  # защита от деления на 0
         return round(bet_amount * (1 / price - 1), 4)
     else:
         return round(-bet_amount, 4)
@@ -39,9 +47,9 @@ async def check_resolved_markets() -> int:
     to_check = [
         r for r in history
         if r.get("condition_id")
+        and len(r["condition_id"]) > 10  # пропуск dummy ID
         and r["condition_id"] not in tracked_ids
-        and r.get("end_date")
-        and r["end_date"] < now.isoformat()
+        and time.time() - _last_checked.get(r["condition_id"], 0) > _CHECK_COOLDOWN
     ]
 
     if not to_check:
@@ -51,6 +59,7 @@ async def check_resolved_markets() -> int:
     async with aiohttp.ClientSession() as session:
         for record in to_check:
             condition_id = record["condition_id"]
+            _last_checked[condition_id] = time.time()
             result = await _fetch_resolution(session, condition_id)
             if result is None:
                 continue

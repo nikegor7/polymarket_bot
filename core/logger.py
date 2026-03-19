@@ -36,6 +36,8 @@ def log_decision(market: dict, result, dry_run: bool) -> None:
         "bet_amount": result["bet_amount"],
         "dry_run": dry_run,
         "reasoning": result["reasoning"],
+        "prompt_text": result.get("prompt_text", ""),
+        "raw_response": result.get("raw_response", ""),
     }
 
     insert_bet(record)

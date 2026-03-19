@@ -15,6 +15,7 @@ def _require(key: str) -> str:
 ANTHROPIC_API_KEY: str = _require("ANTHROPIC_API_KEY")
 GNEWS_API_KEY: str = _require("GNEWS_API_KEY")
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")  # если задан — используется вместо GNews
+CRYPTOPANIC_API_KEY: str = os.getenv("CRYPTOPANIC_API_KEY", "")  # крипто-новости + sentiment
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 
 # Telegram (опционально — если не заданы, уведомления отключены)
@@ -55,9 +56,21 @@ DAILY_MODE: bool = os.getenv("DAILY_MODE", "false").lower() == "true"
 MAX_DAYS_TO_CLOSE: int = int(os.getenv("MAX_DAYS_TO_CLOSE", "0"))  # 0 = без ограничения
 NEWS_CACHE_TTL: int = _NEWS_CACHE_TTL_DAILY if DAILY_MODE else _NEWS_CACHE_TTL_NORMAL
 
+# Фильтр экстремальных цен — рынки вне этого диапазона пропускаются
+MIN_YES_PRICE: float = float(os.getenv("MIN_YES_PRICE", "0.05"))   # < 5% = мусорный tail
+MAX_YES_PRICE: float = float(os.getenv("MAX_YES_PRICE", "0.95"))   # > 95% = уже решённый
+
 # CLOB фильтры (Этапы 12-13)
 MAX_SPREAD: float = float(os.getenv("MAX_SPREAD", "0.05"))          # макс спред для ставки
 PRICE_CHANGE_THRESHOLD: float = 0.03                                 # движение > 3% за час = сигнал
+
+# Claude модель
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_MAX_TOKENS: int = int(os.getenv("CLAUDE_MAX_TOKENS", "512"))
+
+# Лимиты риска
+DAILY_BET_LIMIT: float = float(os.getenv("DAILY_BET_LIMIT", "25"))  # макс сумма ставок в день
+MAX_OPEN_BETS: int = int(os.getenv("MAX_OPEN_BETS", "10"))          # макс неразрешённых ставок
 
 # Топики по категориям — спорт намеренно исключён
 CATEGORY_TOPICS: dict = {
