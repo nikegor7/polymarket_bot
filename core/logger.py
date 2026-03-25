@@ -43,17 +43,20 @@ def log_decision(market: dict, result, dry_run: bool) -> None:
     insert_bet(record)
 
 
-def print_summary(bets: list) -> None:
-    """Выводит статистику по накопленной истории."""
+def print_summary(bets: list, total_count: int = 0) -> None:
+    """Выводит статистику по накопленной истории.
+    bets — последние N ставок, total_count — общее кол-во в БД."""
     if not bets:
         print("История пуста.")
         return
 
-    total = len(bets)
+    shown = len(bets)
+    total = total_count or shown
     total_bet = sum(r["bet_amount"] for r in bets)
-    avg_edge = sum(r["edge"] for r in bets) / total
+    avg_edge = sum(r["edge"] for r in bets) / shown
 
-    print(f"\n=== СТАТИСТИКА ({total} ставок) ===")
+    label = f"последние {shown} из {total}" if total > shown else f"{total}"
+    print(f"\n=== СТАТИСТИКА ({label} ставок) ===")
     print(f"  Общая сумма ставок: ${total_bet:.2f}")
     print(f"  Средний edge:       {avg_edge:+.1%}")
     print(f"  DRY RUN:            {sum(1 for r in bets if r['dry_run'])}")

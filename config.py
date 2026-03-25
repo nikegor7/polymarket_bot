@@ -16,6 +16,7 @@ ANTHROPIC_API_KEY: str = _require("ANTHROPIC_API_KEY")
 GNEWS_API_KEY: str = _require("GNEWS_API_KEY")
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")  # если задан — используется вместо GNews
 CRYPTOPANIC_API_KEY: str = os.getenv("CRYPTOPANIC_API_KEY", "")  # крипто-новости + sentiment
+CRYPTOPANIC_PLAN: str = os.getenv("CRYPTOPANIC_PLAN", "free")   # free, developer, pro, enterprise
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 
 # Telegram (опционально — если не заданы, уведомления отключены)
@@ -40,6 +41,7 @@ DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 
 # Strategy
 MIN_EDGE: float = 0.05
+MIN_EDGE_SHORT: float = 0.03  # для коротких таймфреймов (1ч, 4ч)
 KELLY_FRACTION: float = 0.25
 
 # Runtime
@@ -65,7 +67,7 @@ MAX_SPREAD: float = float(os.getenv("MAX_SPREAD", "0.05"))          # макс �
 PRICE_CHANGE_THRESHOLD: float = 0.03                                 # движение > 3% за час = сигнал
 
 # Claude модель
-CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOKENS: int = int(os.getenv("CLAUDE_MAX_TOKENS", "512"))
 
 # Лимиты риска

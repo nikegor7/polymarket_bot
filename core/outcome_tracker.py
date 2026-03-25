@@ -16,9 +16,9 @@ from core import notifier
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
-# Cooldown: не проверять один и тот же рынок чаще чем раз в час
+# Cooldown: не проверять один и тот же рынок чаще чем раз в 10 минут
 _last_checked: dict[str, float] = {}
-_CHECK_COOLDOWN = 3600  # секунд
+_CHECK_COOLDOWN = 600  # секунд (было 3600)
 
 
 def _calc_hypothetical_pnl(side: str, our_prob: float, market_prob: float, bet_amount: float, resolved_yes: bool) -> float:
@@ -145,13 +145,43 @@ def calibration_score(outcomes: list) -> dict:
 
 
 def hypothetical_roi(outcomes: list) -> dict:
-    """Гипотетический P&L и ROI по всем разрешённым ставкам."""
+    """Гипотетический P&L и ROI по всем разрешённым ставкам + Sharpe + max drawdown."""
     if not outcomes:
         return {}
 
     total_pnl = sum(o["hypothetical_pnl"] for o in outcomes)
     total_bet = sum(o["bet_amount"] for o in outcomes)
     wins = sum(1 for o in outcomes if o["won"])
+
+    # Max drawdown — наибольшая просадка
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    pnl_list = []
+    for o in outcomes:
+        pnl = o["hypothetical_pnl"]
+        pnl_list.append(pnl)
+        cumulative += pnl
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
+        if dd > max_drawdown:
+            max_drawdown = dd
+
+    # Sharpe ratio (simplified: avg return / std dev)
+    sharpe = 0.0
+    if len(pnl_list) >= 3:
+        avg_pnl = sum(pnl_list) / len(pnl_list)
+        variance = sum((p - avg_pnl) ** 2 for p in pnl_list) / len(pnl_list)
+        std_dev = variance ** 0.5
+        if std_dev > 0:
+            sharpe = round(avg_pnl / std_dev, 2)
+
+    # Average edge на выигранных vs проигранных
+    won_edges = [o.get("our_prob", 0.5) - o.get("market_prob", 0.5) for o in outcomes if o["won"]]
+    lost_edges = [o.get("our_prob", 0.5) - o.get("market_prob", 0.5) for o in outcomes if not o["won"]]
+    avg_edge_won = round(sum(won_edges) / len(won_edges), 3) if won_edges else 0.0
+    avg_edge_lost = round(sum(lost_edges) / len(lost_edges), 3) if lost_edges else 0.0
 
     return {
         "total_pnl": round(total_pnl, 2),
@@ -160,6 +190,10 @@ def hypothetical_roi(outcomes: list) -> dict:
         "win_rate": round(wins / len(outcomes), 3),
         "wins": wins,
         "total": len(outcomes),
+        "max_drawdown": round(max_drawdown, 2),
+        "sharpe": sharpe,
+        "avg_edge_won": avg_edge_won,
+        "avg_edge_lost": avg_edge_lost,
     }
 
 
@@ -191,6 +225,11 @@ def print_calibration_report() -> None:
     print(f"  Win rate:        {roi['win_rate']:.0%}  ({roi['wins']}/{roi['total']})")
     print(f"  Гипотет. P&L:   ${roi['total_pnl']:+.2f}  (ROI {roi['roi_pct']:+.1f}%)")
     print(f"  Brier score:     {cal['brier_score']:.4f}  (цель < 0.05)")
+    print(f"  Max drawdown:    ${roi['max_drawdown']:.2f}")
+    if roi.get("sharpe"):
+        print(f"  Sharpe ratio:    {roi['sharpe']:.2f}")
+    if roi.get("avg_edge_won") or roi.get("avg_edge_lost"):
+        print(f"  Avg edge (win):  {roi['avg_edge_won']:+.1%} | (loss): {roi['avg_edge_lost']:+.1%}")
 
     if cal.get("buckets"):
         print("  По диапазонам вероятности:")
@@ -206,11 +245,13 @@ def print_calibration_report() -> None:
 
 
 async def _fetch_resolution(session: aiohttp.ClientSession, condition_id: str) -> dict | None:
-    """Запрашивает Gamma API и возвращает {resolved_yes, resolved_at} если рынок разрешён."""
+    """Запрашивает Gamma API и возвращает {resolved_yes, resolved_at} если рынок разрешён.
+    Проверяет dispute status — не записывает outcome если рынок оспорен."""
     try:
         async with session.get(
             f"{GAMMA_BASE}/markets",
             params={"conditionIds": condition_id},
+            timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
             if resp.status != 200:
                 return None
@@ -222,6 +263,13 @@ async def _fetch_resolution(session: aiohttp.ClientSession, condition_id: str) -
         return None
 
     market = data[0] if isinstance(data, list) else data
+
+    # Проверка dispute status — если оспорен, не записываем outcome
+    uma_status = market.get("uma_resolution_status") or market.get("umaResolutionStatus") or ""
+    if uma_status.lower() in ("disputed", "pending", "challenge"):
+        print(f"  [Tracker] {condition_id[:12]}... — UMA disputed ({uma_status}), ждём финального решения")
+        return None
+
     if not market.get("resolved"):
         return None
 
@@ -229,7 +277,9 @@ async def _fetch_resolution(session: aiohttp.ClientSession, condition_id: str) -
     if resolution_price is None:
         return None
 
-    resolved_yes = float(resolution_price) >= 0.99
+    # Поддержка partial resolution (>= 0.5 = YES wins)
+    res_price = float(resolution_price)
+    resolved_yes = res_price >= 0.5
     resolved_at = market.get("resolutionDate") or market.get("endDateIso") or ""
 
-    return {"resolved_yes": resolved_yes, "resolved_at": resolved_at}
+    return {"resolved_yes": resolved_yes, "resolved_at": resolved_at, "resolution_price": res_price}

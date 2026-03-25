@@ -1,15 +1,60 @@
 import asyncio
+import io
+import os
 import sys
+import time
 
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from datetime import datetime
+from pathlib import Path
 
+
+# ── Логирование в файл + консоль ──────────────────────────
+LOG_FILE = Path(__file__).parent / "data" / "bot.log"
+
+
+class _Tee:
+    """Пишет одновременно в консоль и в лог-файл."""
+    def __init__(self, original_stream, log_fh):
+        self._original = original_stream
+        self._log = log_fh
+
+    def write(self, text):
+        self._original.write(text)
+        try:
+            self._log.write(text)
+            self._log.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        self._original.flush()
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+
+    def reconfigure(self, **kwargs):
+        if hasattr(self._original, "reconfigure"):
+            self._original.reconfigure(**kwargs)
+
+
+def _setup_logging():
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Очищаем файл при каждом запуске (mode="w")
+    log_fh = open(LOG_FILE, "w", encoding="utf-8", errors="replace")
+    sys.stdout = _Tee(sys.stdout, log_fh)
+    sys.stderr = _Tee(sys.stderr, log_fh)
+
+
+_setup_logging()
+
+import aiohttp
 import config
-from core.database import init_db, load_bets, has_recent_bet, total_bet_amount_today, count_open_bets
+from core.database import init_db, load_bets, count_bets, has_recent_bet, total_bet_amount_today, count_open_bets
 from core.polymarket_client import PolymarketClient
 from core.news_monitor import NewsMonitor
 from core.strategy import Strategy
@@ -22,24 +67,30 @@ def ts():
     return datetime.now().strftime("%H:%M:%S")
 
 
-async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly: PolymarketClient):
-    """Анализирует один рынок: новости + цена + крипто сигнал + Claude.
-    Возвращает (market, result, price_change) или (market, None, 0) при пропуске."""
+async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly: PolymarketClient,
+                       orderbook: dict = None):
+    """Анализирует один рынок: новости + цена + крипто сигнал + orderbook + Claude.
+    orderbook — если передан, не запрашивается повторно (batch pre-fetch).
+    Возвращает (market, result, price_signals) или (market, None, {}) при пропуске."""
     question = market["question"]
     condition_id = market.get("condition_id", "")
 
     # Дедупликация: не ставить на один рынок чаще чем раз в 24ч
     if condition_id and has_recent_bet(condition_id):
         print(f"  [{ts()}] {question[:50]} — уже ставили за 24ч, пропуск")
-        return market, None, 0.0
+        return market, None, {}
 
-    # Параллельно: новости + цена за 1ч + крипто сигнал + fear & greed
-    news_task = news.get_news(question)
-    price_task = poly.get_price_change_1h(market["yes_token_id"])
-    crypto_task = poly.get_crypto_signal(question)
-    fg_task = poly.get_fear_greed()
+    # Параллельно: новости + цены (мультитаймфрейм) + крипто + fear & greed + market signals + fee
+    _t = int(os.getenv("API_TIMEOUT", "60"))
+    news_task = asyncio.wait_for(news.get_news(question), timeout=_t)
+    price_task = asyncio.wait_for(poly.get_price_signals(market["yes_token_id"]), timeout=_t)
+    crypto_task = asyncio.wait_for(poly.get_crypto_signal(question), timeout=_t)
+    fg_task = asyncio.wait_for(poly.get_fear_greed(), timeout=_t)
+    msig_task = asyncio.wait_for(poly.get_market_signals(market), timeout=_t)
+    fee_task = asyncio.wait_for(poly.get_fee_rate(market["yes_token_id"]), timeout=_t)
 
-    results = await asyncio.gather(news_task, price_task, crypto_task, fg_task, return_exceptions=True)
+    results = await asyncio.gather(news_task, price_task, crypto_task, fg_task, msig_task, fee_task,
+                                   return_exceptions=True)
 
     # Новости
     if isinstance(results[0], Exception):
@@ -48,8 +99,27 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
     else:
         articles, is_fresh = results[0]
 
-    # Цена, крипто, fear & greed
-    price_change = results[1] if not isinstance(results[1], Exception) else 0.0
+    # Ценовые сигналы (мультитаймфрейм)
+    price_signals = results[1] if not isinstance(results[1], Exception) else {}
+    price_change = price_signals.get("change_1h", 0.0) if isinstance(price_signals, dict) else 0.0
+
+    # Orderbook — уже получен через batch в run_cycle
+    if orderbook is None:
+        orderbook = {}
+
+    # Market signals (OI, live volume, smart money)
+    market_signals = results[4] if not isinstance(results[4], Exception) else {}
+
+    # Fee rate из API
+    fee_rate = results[5] if not isinstance(results[5], Exception) else 0.0
+
+    # Pre-filter: если spread слишком большой — не тратим Claude
+    ob_spread = orderbook.get("spread", 1.0) if isinstance(orderbook, dict) else 1.0
+    if ob_spread > config.MAX_SPREAD and not config.DRY_RUN:
+        print(f"  [{ts()}] {question[:50]} — spread {ob_spread:.3f} > MAX_SPREAD — пропуск (до Claude)")
+        return market, None, price_signals
+
+    # Крипто, fear & greed
     crypto_signal = results[2] if not isinstance(results[2], Exception) else ""
     fear_greed = results[3] if not isinstance(results[3], Exception) else ""
 
@@ -63,38 +133,56 @@ async def _analyze_one(market: dict, news: NewsMonitor, strategy: Strategy, poly
 
     if not has_news and not has_crypto:
         print(f"  [{ts()}] {question[:50]} — нет данных (ни новостей, ни крипто), пропуск")
-        return market, None, 0.0
+        return market, None, price_signals
 
-    if not has_news and has_crypto:
-        print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
-        print(f"  [{ts()}] {question[:50]} — нет новостей, но есть крипто данные — анализируем...")
-    elif not is_fresh:
-        # Кэшированные новости — всё равно анализируем (Claude дёшев)
-        if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
-            direction = "+" if price_change > 0 else ""
-            print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
-        if crypto_signal:
-            print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
-        print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей (кэш), анализируем...")
-    else:
-        if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
-            direction = "+" if price_change > 0 else ""
-            print(f"  [{ts()}] {question[:50]} — цена {direction}{price_change:.1%}/ч")
-        if crypto_signal:
-            print(f"  [{ts()}] {question[:50]} — {crypto_signal}")
-        print(f"  [{ts()}] {question[:50]} — {len(articles)} новостей, анализируем...")
+    # Логирование сигналов
+    signal_parts = []
+    if abs(price_change) >= config.PRICE_CHANGE_THRESHOLD:
+        signal_parts.append(f"1h:{price_change:+.1%}")
+    ch24 = price_signals.get("change_24h", 0) if isinstance(price_signals, dict) else 0
+    if abs(ch24) >= 0.03:
+        signal_parts.append(f"24h:{ch24:+.1%}")
+    if isinstance(orderbook, dict) and orderbook.get("reliable"):
+        imb = orderbook.get("imbalance", 0.5)
+        if abs(imb - 0.5) > 0.1:
+            signal_parts.append(f"imb:{imb:.0%}")
+    if isinstance(market_signals, dict):
+        oi = market_signals.get("open_interest", 0)
+        if oi > 0:
+            signal_parts.append(f"OI:${oi:,.0f}")
+        sm = market_signals.get("smart_money", {})
+        if isinstance(sm, dict) and sm.get("reliable"):
+            signal_parts.append(f"SM:{sm['bias']:.0%}YES")
+    if crypto_signal:
+        signal_parts.append(crypto_signal[:60])
+
+    news_label = f"{len(articles)} новостей" + (" (кэш)" if not is_fresh else "")
+    signals_str = " | ".join(signal_parts) if signal_parts else ""
+    if signals_str:
+        print(f"  [{ts()}] {question[:50]} — {signals_str}")
+    print(f"  [{ts()}] {question[:50]} — {news_label}, анализируем...")
 
     try:
-        result = await strategy.evaluate(market, articles, price_change_1h=price_change, crypto_signal=crypto_signal)
+        result = await strategy.evaluate(
+            market, articles,
+            price_change_1h=price_change,
+            crypto_signal=crypto_signal,
+            price_signals=price_signals if isinstance(price_signals, dict) else None,
+            orderbook=orderbook if isinstance(orderbook, dict) else None,
+            market_signals=market_signals if isinstance(market_signals, dict) else None,
+            fee_rate=fee_rate,
+        )
     except Exception as e:
         print(f"  [{ts()}] {question[:50]} — ошибка Claude: {e}")
-        return market, None, 0.0
+        return market, None, price_signals
 
-    return market, result, price_change
+    return market, result, price_signals
 
 
 async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strategy, daily_mode: bool = False) -> int:
     """Возвращает количество сделанных ставок в цикле."""
+    cycle_start = time.time()
+
     # Проверка лимитов перед циклом
     daily_total = total_bet_amount_today()
     if daily_total >= config.DAILY_BET_LIMIT:
@@ -110,14 +198,34 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
     try:
         markets = await poly.get_daily_markets() if daily_mode else await poly.get_markets()
     except Exception as e:
-        print(f"[{ts()}] Ошибка загрузки рынков: {e}")
-        await notifier.notify_error(f"Ошибка загрузки рынков: {e}")
+        print(f"[{ts()}] Ошибка загрузки рынков: {type(e).__name__}: {e}")
+        await notifier.notify_error(f"Ошибка загрузки рынков: {type(e).__name__}: {e}")
         return 0
 
-    print(f"[{ts()}] Найдено {len(markets)} рынков — запускаем параллельный анализ...")
+    tf_counts = {}
+    for m in markets:
+        tf = m.get("timeframe", "daily")
+        tf_counts[tf] = tf_counts.get(tf, 0) + 1
+    tf_str = ", ".join(f"{k}: {v}" for k, v in sorted(tf_counts.items()))
+    print(f"[{ts()}] Найдено {len(markets)} рынков ({tf_str})")
 
-    # Параллельный анализ всех рынков
-    tasks = [_analyze_one(m, news, strategy, poly) for m in markets]
+    # Batch orderbook: 1 запрос POST /books вместо 10 GET /book
+    token_ids = [m["yes_token_id"] for m in markets if m.get("yes_token_id")]
+    print(f"[{ts()}] Batch orderbooks ({len(token_ids)} токенов)...")
+    try:
+        batch_obs = await asyncio.wait_for(poly.get_batch_orderbooks(token_ids), timeout=int(os.getenv("API_TIMEOUT", "60")))
+    except Exception as e:
+        print(f"[{ts()}] Batch orderbook ошибка: {e}, будут индивидуальные")
+        batch_obs = {}
+
+    print(f"[{ts()}] Запускаем параллельный анализ...")
+
+    # Параллельный анализ всех рынков (orderbook уже получен batch'ем)
+    tasks = [
+        _analyze_one(m, news, strategy, poly,
+                     orderbook=batch_obs.get(m.get("yes_token_id", ""), None))
+        for m in markets
+    ]
     analyses = await asyncio.gather(*tasks, return_exceptions=True)
 
     bets_placed = 0
@@ -128,9 +236,10 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
             print(f"[{ts()}] Неожиданная ошибка анализа: {item}")
             continue
 
-        market, result, price_change = item
+        market, result, price_signals = item
         end_date = (market.get("end_date") or "")[:10] or "?"
-        print(f"\n[{ts()}] --- {market['question'][:60]} | до {end_date}")
+        timeframe = market.get("timeframe", "daily")
+        print(f"\n[{ts()}] --- [{timeframe}] {market['question'][:60]} | до {end_date}")
 
         log_decision(market, result, config.DRY_RUN)
 
@@ -139,18 +248,46 @@ async def run_cycle(poly: PolymarketClient, news: NewsMonitor, strategy: Strateg
             await notifier.notify_bet(market, result, config.DRY_RUN)
 
             token_id = market["yes_token_id"] if result["side"] == "YES" else market["no_token_id"]
-            spread = await poly.get_spread(token_id)
-            if spread > config.MAX_SPREAD:
-                warn = "пропуск" if not config.DRY_RUN else "предупреждение (DRY RUN)"
-                print(f"  [{ts()}] Спред {spread:.3f} > MAX_SPREAD {config.MAX_SPREAD} — {warn}")
-                if not config.DRY_RUN:
+            # Spread уже проверен в _analyze_one (pre-filter), но повторно для LIVE
+            if not config.DRY_RUN:
+                spread = await poly.get_spread(token_id)
+                if spread > config.MAX_SPREAD:
+                    print(f"  [{ts()}] Спред {spread:.3f} > MAX_SPREAD {config.MAX_SPREAD} — пропуск ставки")
                     continue
             try:
                 await poly.place_bet(token_id, result["side"], result["bet_amount"])
             except Exception as e:
                 print(f"  [{ts()}] Ошибка ставки: {e}")
 
+    cycle_time = time.time() - cycle_start
+    # Rate limit stats
+    from core.polymarket_client import _rate
+    rate_stats = _rate.stats()
+    rate_str = " | ".join(f"{k}:{v}" for k, v in rate_stats.items()) if rate_stats else "idle"
+    print(f"\n[{ts()}] Цикл завершён за {cycle_time:.1f}с | Ставок: {bets_placed} | API: {rate_str}")
+    if cycle_time > config.POLL_INTERVAL * 0.8:
+        print(f"  [WARNING] Цикл занял {cycle_time:.0f}с — близко к интервалу {config.POLL_INTERVAL}с!")
+
     return bets_placed
+
+
+async def _check_geoblock():
+    """Проверка гео-ограничений при запуске."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=int(os.getenv("API_TIMEOUT", "60")))) as session:
+            async with session.get("https://polymarket.com/api/geoblock") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("blocked"):
+                        country = data.get("country", "?")
+                        print(f"[{ts()}] ⚠️  GEO-BLOCK: IP заблокирован (страна: {country})")
+                        print(f"[{ts()}]    Polymarket недоступен из вашего региона. Используйте VPN.")
+                        return False
+                    else:
+                        print(f"[{ts()}] Гео-проверка: OK ({data.get('country', '?')})")
+    except Exception:
+        print(f"[{ts()}] Гео-проверка: не удалось (продолжаем)")
+    return True
 
 
 async def main():
@@ -161,11 +298,14 @@ async def main():
 
     mode = "DRY RUN" if config.DRY_RUN else "LIVE ⚠️"
     print(f"[{ts()}] Бот запущен | Режим: {mode} | Бюджет: ${config.BUDGET}")
-    print(f"[{ts()}] MIN_EDGE={config.MIN_EDGE:.0%} | KELLY={config.KELLY_FRACTION} | MAX_BET=${config.MAX_BET}")
+    print(f"[{ts()}] MIN_EDGE={config.MIN_EDGE:.0%} (short={config.MIN_EDGE_SHORT:.0%}) | KELLY={config.KELLY_FRACTION} | MAX_BET=${config.MAX_BET}")
     print(f"[{ts()}] Рынки: {markets_mode} | Интервал: {interval}с | Топ: {config.TOP_MARKETS}")
     print(f"[{ts()}] Категории: {', '.join(config.ACTIVE_CATEGORIES)}")
     tg_status = "включены" if config.TELEGRAM_BOT_TOKEN else "отключены"
     print(f"[{ts()}] Telegram: {tg_status}")
+
+    # Гео-проверка
+    await _check_geoblock()
 
     await notifier.send(
         f"🚀 <b>Бот запущен</b>\n"
@@ -196,9 +336,9 @@ async def main():
                 if new_outcomes:
                     print(f"[{ts()}] Трекер: записано {new_outcomes} новых исходов")
 
-                bets = load_bets()
+                bets = load_bets(limit=50)
                 if bets:
-                    print_summary(bets)
+                    print_summary(bets, total_count=count_bets())
 
                 print_calibration_report()
 

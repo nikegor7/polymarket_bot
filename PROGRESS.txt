@@ -141,7 +141,88 @@ PHASE 5.6 — Throughput Fix        [DONE] 2026-03-19
 [!] 56 тестов — все проходят
 
 =========================================
+PHASE 5.7 — API Alignment         [DONE] 2026-03-21
+=========================================
+Создан polymarket_api_reference.md — полный справочник API (204 страницы docs).
+Аудит покрытия API endpoints выявил 15 дыр и план из 33 улучшений.
+
+--- Фаза 1 плана: Стабильность и эффективность (6/6) ---
+[x] Таймауты на все API вызовы: _TIMEOUT=15с (polymarket_client.py)
+[x] Retry с exponential backoff: _request_with_retry() — 425/5xx/timeout
+[x] Серверная фильтрация рынков: volume_num_min, end_date_max в Gamma API
+[x] Индексы в SQLite: idx_bets_condition_ts, idx_bets_timestamp, idx_outcomes_condition
+[x] Кеширование CoinGecko: 5 мин TTL (_crypto_cache)
+[x] Пагинация load_bets(): limit=50 в main loop, count_bets() для быстрого COUNT
+
+--- Фаза 3 плана (частично): Data-driven стратегия ---
+[x] Мультитаймфреймовые цены: get_price_signals() — 1h/24h/7d + volatility
+[x] Order book depth analysis: get_orderbook_analysis() — VWAP, imbalance, depth ±5%
+[x] Per-category MIN_EDGE: crypto=6%, politics=4%, geopolitics=7%
+[x] Корреляционный Kelly: count_open_bets_by_category() + exposure_scale по категориям
+[x] Fee estimation в Kelly formula: _estimate_fee() для crypto
+[x] Улучшенный Claude prompt: мультитаймфрейм + orderbook + crypto rules
+[x] Калибровочные метрики: Brier score, win_rate_by_category, avg_edge won/lost
+
+--- Фаза 4 плана (частично) ---
+[x] Sharpe ratio + max drawdown в hypothetical_roi()
+[x] Гео-проверка при запуске: _check_geoblock()
+[x] Telegram /accuracy, /config команды
+[x] Dispute проверка: uma_resolution_status в outcome_tracker
+[x] Partial resolution: >= 0.5 = YES wins (вместо >= 0.99)
+[x] Cooldown resolution: 10 мин вместо 1ч
+
+=========================================
+PHASE 5.8 — Data API & Optimization [DONE] 2026-03-21
+=========================================
+Подключены Data API сигналы, batch orderbooks, rate budget, реальные комиссии.
+
+--- Data API сигналы (3 новых endpoint'а) ---
+[x] GET /oi — Open Interest как сигнал надёжности рыночной цены
+[x] GET /live-volume — live объём торгов
+[x] GET /holders — smart money: крупные держатели YES vs NO (bias)
+[x] get_smart_money_signal() — агрегация holders в YES/NO bias
+[x] get_market_signals() — параллельный сбор OI + volume + smart money
+[x] Кеш Data API: 10 мин TTL (_data_cache) — экономит ~30 запросов/цикл
+
+--- Batch orderbooks (1 запрос вместо 10) ---
+[x] POST /books — batch fetch всех orderbook'ов одним запросом
+[x] _analyze_book_data() — вынесена общая логика анализа (DRY)
+[x] get_batch_orderbooks() с fallback на индивидуальные GET /book
+[x] run_cycle() — batch pre-fetch перед параллельным анализом
+
+--- Rate limit budget ---
+[x] _RateBudget — скользящее окно 10с, 4 bucket'а:
+    gamma_markets: 250/300, clob_book: 1200/1500,
+    clob_books: 400/500, data_api: 800/1000
+[x] wait_if_needed() — автоматическое ожидание при исчерпании бюджета
+[x] rate_bucket= параметр в _request_with_retry() — все вызовы учитываются
+[x] Логирование использования API в конце цикла
+
+--- Реальные комиссии из API ---
+[x] GET /fee-rate — реальная ставка вместо захардкоженной формулы
+[x] get_fee_rate() с кешем 30 мин (FEE_CACHE_TTL)
+[x] strategy.evaluate(fee_rate=...) — API fee → Kelly, fallback на _estimate_fee()
+
+--- News freshness ---
+[x] Сортировка новостей по дате (свежие первыми)
+[x] Метки *** BREAKING *** (≤2ч), *** RECENT *** (≤12ч), *** OLD *** (>48ч)
+[x] Claude prompt: BREAKING news = больший допустимый deviation от рынка
+
+--- Claude prompt расширен ---
+[x] Smart money bias в промпте (whales YES/NO conviction)
+[x] Open Interest + live volume в промпте
+[x] Правила: SM bias > 0.7 = follow whales, high OI = price more reliable
+
+=========================================
 PHASE 6 — Execution               [BLOCKED: геоблок]
 =========================================
-[ ] py-clob-client: реальные ставки
-[ ] WebSocket real-time цены
+[ ] py-clob-client: реальные ставки (place_bet → NotImplementedError)
+[ ] L1/L2 аутентификация (config: POLY_PRIVATE_KEY есть, API creds нет)
+[ ] Market order (FOK) + Limit order (GTC/GTD)
+[ ] Heartbeat loop (5 сек — без него ордера отменятся через 10с)
+[ ] Balance/allowance проверка перед ордером
+[ ] WebSocket market channel (real-time цены вместо polling)
+[ ] WebSocket user channel (статус ордеров)
+[ ] /balance, /portfolio Telegram команды
+[ ] Автоматический redeem выигрышных токенов
+[ ] Leaderboard copy-trading (GET /v1/leaderboard)

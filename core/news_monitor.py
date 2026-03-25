@@ -11,7 +11,7 @@ import config
 
 GNEWS_BASE = "https://gnews.io/api/v4/search"
 TAVILY_BASE = "https://api.tavily.com/search"
-CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1/posts/"
+CRYPTOPANIC_BASE = f"https://cryptopanic.com/api/{config.CRYPTOPANIC_PLAN}/v2/posts/"
 CACHE_FILE = Path("data/news_cache.json")
 GNEWS_DAILY_LIMIT = 95  # оставляем запас от 100 req/day
 EMPTY_CACHE_TTL = 120   # пустые ответы кэшируем только 2 мин (а не 30 мин)
@@ -80,7 +80,7 @@ class NewsMonitor:
         self._fetch_sem = asyncio.Semaphore(1)  # последовательные запросы к API (GNews 429)
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
         return self
 
     async def __aexit__(self, *args):

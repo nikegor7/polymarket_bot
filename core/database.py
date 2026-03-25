@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -74,11 +75,15 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
-    """Создаёт таблицы и мигрирует данные из JSON при первом запуске."""
+    """Создаёт таблицы, индексы и мигрирует данные из JSON при первом запуске."""
     conn = get_connection()
     try:
         conn.execute(_CREATE_BETS)
         conn.execute(_CREATE_OUTCOMES)
+        # Индексы для быстрых запросов
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bets_condition_ts ON bets(condition_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bets_timestamp ON bets(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_condition ON outcomes(condition_id)")
         conn.commit()
         _ensure_columns(conn)
         _migrate_json(conn)
@@ -153,12 +158,26 @@ def insert_bet(record: dict) -> None:
         conn.close()
 
 
-def load_bets() -> list[dict]:
-    """Загружает все ставки."""
+def load_bets(limit: int = 0) -> list[dict]:
+    """Загружает ставки. limit=0 — все (для outcome tracking), limit>0 — последние N."""
     conn = get_connection()
     try:
+        if limit > 0:
+            rows = conn.execute(
+                "SELECT * FROM bets ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in reversed(rows)]
         rows = conn.execute("SELECT * FROM bets ORDER BY id").fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def count_bets() -> int:
+    """Быстрый подсчёт общего количества ставок (без загрузки всех строк)."""
+    conn = get_connection()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
     finally:
         conn.close()
 
@@ -229,10 +248,10 @@ def total_bet_amount_today() -> float:
     """Сумма ставок за сегодня."""
     conn = get_connection()
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today_start = datetime.now().strftime("%Y-%m-%d 00:00:00")
         row = conn.execute(
-            "SELECT COALESCE(SUM(bet_amount), 0) FROM bets WHERE timestamp LIKE ?",
-            (f"{today}%",),
+            "SELECT COALESCE(SUM(bet_amount), 0) FROM bets WHERE timestamp >= ?",
+            (today_start,),
         ).fetchone()
         return row[0]
     finally:
@@ -248,5 +267,47 @@ def count_open_bets() -> int:
             "(SELECT 1 FROM outcomes o WHERE o.condition_id = b.condition_id)"
         ).fetchone()
         return row[0]
+    finally:
+        conn.close()
+
+
+# Категории для корреляционного Kelly
+_BET_CATEGORIES = {
+    "crypto": ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana",
+               "coinbase", "binance", "defi", "nft", "blockchain", "xrp",
+               "cardano", "dogecoin", "polygon", "avalanche", "chainlink",
+               "polkadot", "litecoin", "uniswap", "toncoin", "pepe"],
+    "politics": ["trump", "president", "congress", "senate", "election",
+                 "white house", "tariff", "sanction", "republican", "democrat"],
+    "economics": ["inflation", "recession", "gdp", "interest rate", "dollar",
+                  "stock market", "s&p", "nasdaq", "oil", "gold"],
+    "tech": ["openai", "gpt", "artificial intelligence", "apple",
+             "tesla", "spacex", "elon", "google", "microsoft", "nvidia"],
+    "geopolitics": ["ukraine", "russia", "china", "iran", "war", "ceasefire",
+                    "nato", "israel", "gaza", "taiwan"],
+}
+
+
+def _detect_bet_category(question: str) -> str:
+    q = question.lower()
+    for category, keywords in _BET_CATEGORIES.items():
+        if any(re.search(r'\b' + re.escape(kw) + r'\b', q) for kw in keywords):
+            return category
+    return "other"
+
+
+def count_open_bets_by_category() -> dict[str, int]:
+    """Количество открытых ставок по категориям (для корреляционного Kelly)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT question FROM bets b WHERE NOT EXISTS "
+            "(SELECT 1 FROM outcomes o WHERE o.condition_id = b.condition_id)"
+        ).fetchall()
+        cats: dict[str, int] = {}
+        for r in rows:
+            cat = _detect_bet_category(r["question"])
+            cats[cat] = cats.get(cat, 0) + 1
+        return cats
     finally:
         conn.close()

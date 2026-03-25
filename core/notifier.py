@@ -112,7 +112,7 @@ async def poll_commands() -> list[dict]:
         delay = min(3 * (2 ** (_consecutive_errors - 1)), 60)
         await asyncio.sleep(delay)
 
-    params = {"offset": _poll_offset, "timeout": 0, "allowed_updates": '["message","callback_query"]'}
+    params = {"offset": _poll_offset, "timeout": 10, "allowed_updates": '["message","callback_query"]'}
 
     try:
         status, data = await asyncio.to_thread(_tg_get, "getUpdates", params)
@@ -169,7 +169,7 @@ async def poll_commands() -> list[dict]:
 async def handle_commands() -> None:
     """Обрабатывает входящие команды от разрешённых пользователей."""
     from core.database import load_bets, load_outcomes
-    from core.outcome_tracker import hypothetical_roi, calibration_score
+    from core.outcome_tracker import hypothetical_roi, calibration_score, win_rate_by_category
 
     commands = await poll_commands()
     for cmd in commands:
@@ -188,6 +188,9 @@ async def handle_commands() -> None:
                 msg += f"Win rate: {roi['win_rate']:.0%} ({roi['wins']}/{roi['total']})\n"
                 msg += f"P&L: ${roi['total_pnl']:+.2f}\n"
                 msg += f"ROI: {roi['roi_pct']:+.1f}%\n"
+                msg += f"Max drawdown: ${roi['max_drawdown']:.2f}\n"
+                if roi.get("sharpe"):
+                    msg += f"Sharpe: {roi['sharpe']:.2f}\n"
                 cal = calibration_score(outcomes)
                 if cal:
                     msg += f"Brier: {cal['brier_score']:.4f}"
@@ -208,12 +211,56 @@ async def handle_commands() -> None:
                 lines.append(f"• {b['side']} {b['edge']:+.1%} ${b['bet_amount']:.2f}\n  {q}")
             await send("\n".join(lines), chat_id=chat_id)
 
+        elif text == "/accuracy":
+            outcomes = load_outcomes()
+            if not outcomes:
+                await send("Исходов пока нет — accuracy неизвестен.", chat_id=chat_id)
+                continue
+
+            cats = win_rate_by_category(outcomes)
+            cal = calibration_score(outcomes)
+            roi = hypothetical_roi(outcomes)
+
+            lines = ["🎯 <b>Accuracy Report</b>\n"]
+            lines.append(f"Brier score: {cal['brier_score']:.4f} (цель &lt; 0.05)")
+            lines.append(f"Avg edge (win): {roi.get('avg_edge_won', 0):+.1%}")
+            lines.append(f"Avg edge (loss): {roi.get('avg_edge_lost', 0):+.1%}\n")
+
+            if cal.get("buckets"):
+                lines.append("<b>По вероятности:</b>")
+                for bucket, data in sorted(cal["buckets"].items()):
+                    wr = data["wins"] / data["total"] if data["total"] else 0
+                    lines.append(f"  {bucket}: {data['wins']}/{data['total']} ({wr:.0%})")
+
+            if cats:
+                lines.append("\n<b>По темам:</b>")
+                for cat, data in sorted(cats.items(), key=lambda x: -x[1]["total"]):
+                    wr = data["wins"] / data["total"] if data["total"] else 0
+                    lines.append(f"  {_escape(cat)}: {data['wins']}/{data['total']} ({wr:.0%}) P&L ${data['pnl']:+.2f}")
+
+            await send("\n".join(lines), chat_id=chat_id)
+
+        elif text == "/config":
+            lines = [
+                "⚙️ <b>Конфигурация</b>\n",
+                f"Режим: {'DRY RUN' if config.DRY_RUN else 'LIVE'}",
+                f"Бюджет: ${config.BUDGET} | Max bet: ${config.MAX_BET}",
+                f"Kelly: {config.KELLY_FRACTION} | MIN_EDGE: {config.MIN_EDGE:.0%}",
+                f"Категории: {', '.join(config.ACTIVE_CATEGORIES)}",
+                f"Интервал: {config.POLL_INTERVAL}с | Top: {config.TOP_MARKETS}",
+                f"Daily mode: {'ON' if config.DAILY_MODE else 'OFF'}",
+                f"Max spread: {config.MAX_SPREAD}",
+            ]
+            await send("\n".join(lines), chat_id=chat_id)
+
         elif text in ("/help", "/start"):
             await send_with_buttons(
                 "🤖 <b>Polymarket Bot</b>\n\nВыбери команду:",
                 [
                     [{"text": "📊 Статистика", "callback_data": "/stats"}],
                     [{"text": "📋 Последние ставки", "callback_data": "/last"}],
+                    [{"text": "🎯 Accuracy", "callback_data": "/accuracy"}],
+                    [{"text": "⚙️ Конфигурация", "callback_data": "/config"}],
                 ],
                 chat_id=chat_id,
             )
